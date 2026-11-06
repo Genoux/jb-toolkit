@@ -19,6 +19,9 @@ JB_PROJECTS=$tmp "$root/bin/jb" new smoke --stack static >/dev/null
 cd "$tmp/smoke"
 "$root/bin/jb" check >/dev/null || { "$root/bin/jb" check; exit 1; }
 [ -z "$(JB_PROJECTS=$tmp "$root/bin/jb" session)" ] || { echo "session not silent on a clean project" >&2; exit 1; }
+git config core.hooksPath ""
+LC_ALL=C JB_PROJECTS=$tmp "$root/bin/jb" session | grep -q 'hooks' || { echo "session silent about a problem in the C locale" >&2; exit 1; }
+git config core.hooksPath .githooks
 
 refuses() { if "$@" >/dev/null 2>&1; then echo "hook accepted: $*" >&2; exit 1; fi; }
 echo x > a.txt && git add a.txt
