@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# The one health check (R5). CI runs exactly this.
+# Static site: every local href/src in the HTML files must point at a file
+# that exists.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+status=0
+while IFS= read -r html; do
+  dir=$(dirname "$html")
+  while IFS= read -r ref; do
+    case "$ref" in http*|//*|mailto:*|tel:*|data:*|\#*|javascript:*|"") continue ;; esac
+    path=${ref%%[?#]*}
+    [ -z "$path" ] && continue
+    case "$path" in /*) target=".$path" ;; *) target="$dir/$path" ;; esac
+    if [ ! -e "$target" ]; then echo "$html: missing $ref" >&2; status=1; fi
+  done < <(grep -oE '(href|src)="[^"]*"' "$html" | sed -E 's/^(href|src)="(.*)"$/\2/')
+done < <(find . -name '*.html' -not -path './node_modules/*' -not -path './.demo/*' -not -path './.git/*')
+exit $status

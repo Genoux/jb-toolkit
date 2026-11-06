@@ -1,0 +1,363 @@
+#!/usr/bin/env bash
+#
+# jb: start and keep projects on the jb-toolkit standard (RULES.md).
+# The owner runs `jb install` once; every other command is run by the agent.
+#
+#   jb install                       anchor RULES.md, skills and the session hook for every agent
+#   jb session                       (SessionStart hook) report what the current project needs
+#   jb new <name> [--stack S] [--github] [--dir D]
+#                                    create a project (stacks: rust js static none)
+#   jb sync [path] [--stack S]       re-apply managed files; create missing owned ones
+#   jb check [path]                  report what departs from RULES.md
+#   jb bump <X.Y.Z>                  set the version and commit the bump (on a branch)
+#   jb tag                           tag vX.Y.Z on an up-to-date main
+#   jb rules                         print the path to RULES.md
+#
+set -euo pipefail
+
+TOOLKIT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+TEMPLATES="$TOOLKIT/templates"
+TOOLKIT_VERSION="$(tr -d '[:space:]' < "$TOOLKIT/VERSION")"
+PROJECTS="${JB_PROJECTS:-$(dirname "$TOOLKIT")}"
+STACKS="rust js static none"
+VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc|experimental)\.[0-9]+)?$'
+
+die()  { echo "jb: $*" >&2; exit 1; }
+note() { echo "  $*"; }
+
+usage() { sed -n '3,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+# Replace the block between the jb-toolkit markers in $1 with stdin, or append it.
+put_block() {
+  local file=$1 start=$2 end=$3 block
+  block=$(cat)
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+  if grep -qF "$start" "$file"; then
+    # The block goes through the environment: BSD awk refuses newlines in -v.
+    JB_BLOCK=$block awk -v s="$start" -v e="$end" '
+      $0 == s { print ENVIRON["JB_BLOCK"]; skip = 1; next }
+      $0 == e { skip = 0; next }
+      !skip' "$file" > "$file.jb-tmp" && mv "$file.jb-tmp" "$file"
+  else
+    [ -s "$file" ] && [ -n "$(tail -c1 "$file")" ] && echo >> "$file"
+    [ -s "$file" ] && echo >> "$file"
+    printf '%s\n' "$block" >> "$file"
+  fi
+}
+
+detect_stack() {
+  local d=$1
+  if   [ -f "$d/Cargo.toml" ]; then echo rust
+  elif [ -f "$d/package.json" ]; then echo js
+  elif compgen -G "$d/*.html" >/dev/null; then echo static
+  else echo none
+  fi
+}
+
+render() { # template -> dest, filling {{NAME}} {{STACK}}
+  sed -e "s/{{NAME}}/$NAME/g" -e "s/{{STACK}}/$STACK/g" "$1" > "$2"
+}
+
+# ---------------------------------------------------------------- install
+cmd_install() {
+  local bindir="$HOME/.local/bin"
+  mkdir -p "$bindir"
+  ln -sf "$TOOLKIT/bin/jb" "$bindir/jb"
+  echo "linked $bindir/jb"
+  case ":$PATH:" in *":$bindir:"*) ;; *) note "add $bindir to PATH in your shell profile" ;; esac
+
+  put_block "$HOME/.claude/CLAUDE.md" "<!-- >>> jb-toolkit -->" "<!-- <<< jb-toolkit -->" <<EOF
+<!-- >>> jb-toolkit -->
+Every project follows the jb-toolkit rules below unless its own AGENTS.md
+records an exception. Managed by \`jb install\`; edit the rules in the toolkit.
+@$TOOLKIT/RULES.md
+<!-- <<< jb-toolkit -->
+EOF
+  echo "anchored RULES.md in ~/.claude/CLAUDE.md"
+
+  mkdir -p "$HOME/.claude/skills"
+  local s
+  for s in "$TOOLKIT"/skills/*/; do
+    s=${s%/}
+    ln -sfn "$s" "$HOME/.claude/skills/$(basename "$s")"
+  done
+  echo "linked skills: $(cd "$TOOLKIT/skills" && echo *)"
+
+  # SessionStart hook: tells the agent where the current project stands.
+  local settings="$HOME/.claude/settings.json" hook
+  hook="'$TOOLKIT/bin/jb' session"
+  command -v jq >/dev/null || die "jq is needed to add the SessionStart hook"
+  [ -f "$settings" ] || echo '{}' > "$settings"
+  cp "$settings" "$settings.jb-backup"
+  jq --arg cmd "$hook" '
+    .hooks.SessionStart = (
+      [ (.hooks.SessionStart // [])[] | select((.hooks // []) | all(.command | test("jb-toolkit/bin/jb.? session") | not)) ]
+      + [ { hooks: [ { type: "command", command: $cmd, timeout: 15 } ] } ]
+    )' "$settings.jb-backup" > "$settings"
+  echo "added SessionStart hook to ~/.claude/settings.json (backup: settings.json.jb-backup)"
+
+  if [ -d "$HOME/.codex" ]; then
+    put_block "$HOME/.codex/AGENTS.md" "<!-- >>> jb-toolkit -->" "<!-- <<< jb-toolkit -->" <<EOF
+<!-- >>> jb-toolkit -->
+Before any work, read and follow $TOOLKIT/RULES.md. Every project follows it
+unless its own AGENTS.md records an exception.
+<!-- <<< jb-toolkit -->
+EOF
+    echo "anchored RULES.md in ~/.codex/AGENTS.md"
+  fi
+}
+
+# ---------------------------------------------------------------- sync
+# Managed files are overwritten; owned files are created only when missing.
+sync_into() {
+  local dir=$1
+  ( cd "$dir"
+    git rev-parse --git-dir >/dev/null 2>&1 || die "$dir is not a git repository"
+
+    # managed
+    cp -R "$TEMPLATES/managed/.githooks" "$TEMPLATES/managed/.toolkit" .
+    cp "$TEMPLATES/managed/.editorconfig" .
+    mkdir -p .github
+    cp "$TEMPLATES/managed/.github/pull_request_template.md" .github/
+    chmod +x .githooks/* .toolkit/version
+    echo "$TOOLKIT_VERSION" > .toolkit/toolkit-version
+    { cat "$TEMPLATES/managed/gitignore-block"; } | put_block .gitignore "# >>> jb-toolkit (managed by jb sync; add your own lines outside this block)" "# <<< jb-toolkit"
+    while IFS= read -r line; do
+      [ -n "$line" ] && ! grep -qxF "$line" .gitignore && echo "$line" >> .gitignore
+    done < "$TEMPLATES/stacks/$STACK/gitignore"
+    git config core.hooksPath .githooks
+
+    # Agent settings (untracked, R3.4): publishing tools are denied, not just
+    # discouraged (R2). Merged, so the project's own entries stay.
+    mkdir -p .claude
+    [ -f .claude/settings.json ] || echo '{}' > .claude/settings.json
+    jq '.permissions.deny = ((.permissions.deny // []) + ["Artifact", "mcp__claude_ai_Claude_Docs", "Bash(gh gist create:*)"] | unique)' \
+      .claude/settings.json > .claude/settings.json.jb-tmp && mv .claude/settings.json.jb-tmp .claude/settings.json
+
+    # owned
+    local f
+    for f in README.md AGENTS.md CLAUDE.md PRODUCT.md .github/workflows/ci.yml .github/workflows/release.yml; do
+      if [ ! -e "$f" ]; then
+        mkdir -p "$(dirname "$f")"
+        render "$TEMPLATES/project/$f" "$f"
+        note "created $f"
+      fi
+    done
+    if [ ! -e scripts/check ]; then
+      mkdir -p scripts
+      cp "$TEMPLATES/stacks/$STACK/scripts/check" scripts/check
+      chmod +x scripts/check
+      note "created scripts/check ($STACK)"
+    fi
+    if ! .toolkit/version >/dev/null 2>&1 && [ ! -f VERSION ] \
+       && [ ! -f Cargo.toml ] && [ ! -f package.json ] && [ ! -f pyproject.toml ]; then
+      echo "0.1.0" > VERSION
+      note "created VERSION (0.1.0)"
+    fi
+  )
+  echo "synced $dir to jb-toolkit $TOOLKIT_VERSION ($STACK)"
+}
+
+parse_stack() {
+  STACK=$1
+  case " $STACKS " in *" $STACK "*) ;; *) die "unknown stack '$STACK' (one of: $STACKS)" ;; esac
+}
+
+cmd_sync() {
+  local dir="." stack=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --stack) stack=${2-}; shift 2 ;;
+      -*) die "unknown option $1" ;;
+      *) dir=$1; shift ;;
+    esac
+  done
+  dir=$(cd "$dir" && pwd)
+  NAME=$(basename "$dir")
+  parse_stack "${stack:-$(detect_stack "$dir")}"
+  sync_into "$dir"
+}
+
+# ---------------------------------------------------------------- new
+cmd_new() {
+  local name="" stack=none github=0 parent=$PROJECTS
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --stack) stack=${2-}; shift 2 ;;
+      --github) github=1; shift ;;
+      --dir) parent=${2-}; shift 2 ;;
+      -*) die "unknown option $1" ;;
+      *) name=$1; shift ;;
+    esac
+  done
+  [ -n "$name" ] || die "usage: jb new <name> [--stack rust|js|static|none] [--github] [--dir D]"
+  printf '%s' "$name" | grep -Eq '^[a-z0-9][a-z0-9-]*$' || die "project names are kebab-case: $name"
+  parse_stack "$stack"
+  NAME=$name
+  local dir="$parent/$name"
+  [ -e "$dir" ] && die "$dir already exists (use jb sync to adopt it)"
+
+  mkdir -p "$dir"
+  git -C "$dir" init -q -b main
+  sync_into "$dir"
+  git -C "$dir" add -A
+  git -C "$dir" commit -q -m "chore: start $name from jb-toolkit $TOOLKIT_VERSION"
+  echo "created $dir"
+
+  if [ "$github" = 1 ]; then
+    command -v gh >/dev/null || die "gh is not installed"
+    local owner
+    owner=$(gh api user -q .login)
+    ( cd "$dir"
+      gh repo create "$owner/$name" --private --source . --push
+      gh repo edit "$owner/$name" --enable-rebase-merge --enable-squash-merge=false \
+        --enable-merge-commit=false --delete-branch-on-merge >/dev/null )
+    echo "github: $owner/$name (private, rebase merge only)"
+  fi
+  note "next: write PRODUCT.md, choose the stack in AGENTS.md, then git switch -c feat/<first-thing>"
+}
+
+# ---------------------------------------------------------------- check
+cmd_check() {
+  local dir=${1:-.} fails=0 warns=0
+  dir=$(cd "$dir" && pwd)
+  cd "$dir"
+  git rev-parse --git-dir >/dev/null 2>&1 || die "$dir is not a git repository"
+  bad()  { echo "  ✗ $*"; fails=$((fails + 1)); }
+  warn() { echo "  ! $*"; warns=$((warns + 1)); }
+  ok()   { echo "  ✓ $*"; }
+
+  echo "$dir"
+  local stamp; stamp=$(cat .toolkit/toolkit-version 2>/dev/null || true)
+  if [ -z "$stamp" ]; then bad "not on jb-toolkit: run jb sync"
+  elif [ "$stamp" != "$TOOLKIT_VERSION" ]; then warn "synced at toolkit $stamp, toolkit is $TOOLKIT_VERSION: run jb sync"
+  else ok "toolkit $stamp"; fi
+
+  [ "$(git config core.hooksPath || true)" = ".githooks" ] && ok "hooks enabled" || bad "hooks off: git config core.hooksPath .githooks (R3)"
+
+  local f
+  for f in README.md AGENTS.md CLAUDE.md PRODUCT.md; do
+    [ -f "$f" ] || bad "missing $f (R5)"
+  done
+  [ -x scripts/check ] && ok "scripts/check" || bad "missing executable scripts/check (R5)"
+  grep -qs 'scripts/check' .github/workflows/ci.yml && ok "CI runs scripts/check" || bad "CI does not run scripts/check (R5)"
+  grep -qs '.toolkit/version' .github/workflows/release.yml && ok "release checks tag vs version" || bad "release.yml does not check .toolkit/version (R4.3)"
+
+  local v
+  if [ ! -x .toolkit/version ]; then :
+  elif v=$(.toolkit/version 2>&1); then ok "version $v"
+  else bad "version: $v (R4.2)"; fi
+
+  local tracked
+  tracked=$(git ls-files | grep -E '(^|/)\.(claude|cursor|codex|serena|engram|atl)/' | head -3 || true)
+  [ -z "$tracked" ] && ok "no agent folders tracked" || bad "agent folders tracked: $(echo $tracked) (R3.4)"
+  tracked=$(git ls-files | grep -E '(^|/)\.env(\..+)?$' | grep -v '\.env\.example$' || true)
+  [ -z "$tracked" ] || bad "env files tracked: $(echo $tracked) (R6.5)"
+  jq -e '(.permissions.deny // []) | index("Artifact")' .claude/settings.json >/dev/null 2>&1 \
+    && ok "publishing tools denied" || bad "Artifact/Docs not denied in .claude/settings.json: run jb sync (R2)"
+
+  if git rev-parse -q --verify HEAD >/dev/null; then
+    local n; n=$(git log --format=%B | grep -ciE '^co-authored-by:|generated with' || true)
+    [ "$n" = 0 ] && ok "no agent attribution in history" || bad "$n attribution lines in history (R3.4)"
+    local off
+    off=$(git log -50 --no-merges --format=%s | grep -cvE '^(feat|fix|chore|docs|refactor|perf|test|ci|build|style|revert)(\([a-z0-9-]+\))?!?: ' || true)
+    [ "$off" = 0 ] && ok "last 50 commit headers are conventional" || warn "$off of the last 50 commit headers are not conventional (R3.3)"
+    local branches
+    branches=$(git for-each-ref --format='%(refname:short)' refs/heads \
+      | grep -vE '^(main|(feat|fix|chore|docs|refactor|perf|test|ci|build|release|experiment)/[a-z0-9][a-z0-9._-]*)$' || true)
+    [ -z "$branches" ] || warn "branches off-pattern: $(echo $branches) (R3.2)"
+  fi
+
+  echo "  $fails problem(s), $warns warning(s)"
+  [ "$fails" = 0 ]
+}
+
+# ---------------------------------------------------------------- bump
+cmd_bump() {
+  local new=${1-}
+  printf '%s' "$new" | grep -Eq "$VERSION_RE" || die "usage: jb bump X.Y.Z[-alpha.N|-beta.N|-rc.N|-experimental.N]"
+  [ -x .toolkit/version ] || die "not a jb-toolkit project (run jb sync)"
+  local branch; branch=$(git symbolic-ref --short HEAD)
+  [ "$branch" != main ] || die "bump on a branch, not main (R4.3): git switch -c release/v$new"
+  [ -z "$(git status --porcelain)" ] || die "working tree is not clean"
+  git rev-parse -q --verify "refs/tags/v$new" >/dev/null && die "v$new already exists"
+
+  local old; old=$(.toolkit/version)
+  local file ver
+  while read -r file ver; do
+    case "$file" in
+      *Cargo.toml|*pyproject.toml)
+        awk -v v="$new" '!done && /^version[[:space:]]*=[[:space:]]*"/ { sub(/"[^"]*"/, "\"" v "\""); done=1 } 1' "$file" > "$file.jb-tmp" ;;
+      *package.json)
+        awk -v v="$new" '!done && /^[[:space:]]*"version"[[:space:]]*:/ { sub(/:[[:space:]]*"[^"]*"/, ": \"" v "\""); done=1 } 1' "$file" > "$file.jb-tmp" ;;
+      *VERSION)
+        echo "$new" > "$file.jb-tmp" ;;
+    esac
+    mv "$file.jb-tmp" "$file"
+    git add "$file"
+    note "$file $ver -> $new"
+  done < <(.toolkit/version --files)
+
+  # Lockfiles that record the project's own version.
+  if [ -f Cargo.lock ]; then cargo update --workspace --offline -q 2>/dev/null || cargo metadata --format-version 1 >/dev/null; git add Cargo.lock; fi
+  if [ -f package-lock.json ]; then npm install --package-lock-only --ignore-scripts -s; git add package-lock.json; fi
+
+  [ "$(.toolkit/version)" = "$new" ] || die "bump did not take: .toolkit/version still says $(.toolkit/version)"
+  git commit -q -m "chore: bump version to $new"
+  echo "committed chore: bump version to $new (was $old). Open the pull request; after it merges, run jb tag on main."
+}
+
+# ---------------------------------------------------------------- tag
+cmd_tag() {
+  [ -x .toolkit/version ] || die "not a jb-toolkit project (run jb sync)"
+  [ "$(git symbolic-ref --short HEAD)" = main ] || die "tag from main (R4.3)"
+  [ -z "$(git status --porcelain)" ] || die "working tree is not clean"
+  if git remote get-url origin >/dev/null 2>&1; then
+    git fetch -q origin main
+    [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || die "main is not up to date with origin/main"
+  fi
+  local v; v=$(.toolkit/version)
+  printf '%s' "$v" | grep -Eq "$VERSION_RE" || die "version $v is not SemVer (R4.1)"
+  git rev-parse -q --verify "refs/tags/v$v" >/dev/null && die "v$v already exists: jb bump first"
+  git tag -a "v$v" -m "v$v"
+  echo "tagged v$v. Release it with: git push origin v$v"
+}
+
+# ---------------------------------------------------------------- session
+# Run by the SessionStart hook. Whatever it prints becomes the agent's
+# context, so it prints only what needs acting on, and never fails a session.
+cmd_session() {
+  local root
+  root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+  local name; name=$(basename "$root")
+  if [ ! -d "$root/.toolkit" ]; then
+    case "$root/" in
+      "$PROJECTS"/*)
+        echo "jb-toolkit: '$name' is not on the standard yet (no .toolkit/). Before other work, offer the owner to adopt it (RULES.md R0.3)." ;;
+    esac
+    return 0
+  fi
+  local out problems
+  out=$(cmd_check "$root" 2>&1) || true
+  problems=$(printf '%s\n' "$out" | grep -E '^  [✗!] ' || true)
+  [ -n "$problems" ] || return 0
+  echo "jb-toolkit: '$name' departs from RULES.md. Fix it as part of this session (R0.2), on a branch, and tell the owner what changed:"
+  printf '%s\n' "$problems"
+}
+
+# ---------------------------------------------------------------- main
+cmd=${1-help}; shift || true
+case "$cmd" in
+  install) cmd_install "$@" ;;
+  new)     cmd_new "$@" ;;
+  sync)    cmd_sync "$@" ;;
+  check)   cmd_check "$@" ;;
+  bump)    cmd_bump "$@" ;;
+  tag)     cmd_tag "$@" ;;
+  session) cmd_session "$@" || true ;;
+  rules)   echo "$TOOLKIT/RULES.md" ;;
+  version|--version) echo "$TOOLKIT_VERSION" ;;
+  help|-h|--help) usage ;;
+  *) usage >&2; exit 1 ;;
+esac

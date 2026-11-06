@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# The one health check (R5). CI runs exactly this.
+# No stack chosen yet: replace this with the project's format, lint and test
+# commands once there is code (or rerun `jb sync --stack <rust|js|static>`
+# after deleting this file).
+set -euo pipefail
+echo "scripts/check: no checks defined yet" >&2

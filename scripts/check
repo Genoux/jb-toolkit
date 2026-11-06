@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# The one health check (R5). CI runs exactly this.
+# Syntax of every script, shellcheck when installed, then an end-to-end run:
+# a scaffolded project must pass its own jb check and its hooks must refuse
+# what RULES.md forbids.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+root=$PWD
+
+scripts=(bin/jb scripts/check templates/managed/.githooks/* templates/managed/.toolkit/version templates/stacks/*/scripts/check)
+for f in "${scripts[@]}"; do
+  case "$(head -1 "$f")" in *bash*) bash -n "$f" ;; *) sh -n "$f" ;; esac
+done
+if command -v shellcheck >/dev/null; then shellcheck -S warning "${scripts[@]}"; else echo "shellcheck not installed: skipped" >&2; fi
+
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+export GIT_AUTHOR_NAME=check GIT_AUTHOR_EMAIL=check@localhost GIT_COMMITTER_NAME=check GIT_COMMITTER_EMAIL=check@localhost
+JB_PROJECTS=$tmp "$root/bin/jb" new smoke --stack static >/dev/null
+cd "$tmp/smoke"
+"$root/bin/jb" check >/dev/null || { "$root/bin/jb" check; exit 1; }
+[ -z "$(JB_PROJECTS=$tmp "$root/bin/jb" session)" ] || { echo "session not silent on a clean project" >&2; exit 1; }
+
+refuses() { if "$@" >/dev/null 2>&1; then echo "hook accepted: $*" >&2; exit 1; fi; }
+echo x > a.txt && git add a.txt
+refuses git commit -m "feat: add a"                       # on main
+git switch -q -c feat/smoke
+refuses git commit -m "Added a."                          # not conventional
+refuses git commit -m "feat: add a" -m "Co-authored-by: x <x@y>"
+git commit -q -m "feat: add a"
+git switch -q -c release/v0.2.0 && "$root/bin/jb" bump 0.2.0 >/dev/null
+[ "$(.toolkit/version)" = 0.2.0 ] || { echo "bump failed" >&2; exit 1; }
+echo "toolkit check passed"
