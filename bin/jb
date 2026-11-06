@@ -342,7 +342,9 @@ cmd_session() {
   fi
   local out problems
   out=$(cmd_check "$root" 2>&1) || true
-  problems=$(printf '%s\n' "$out" | grep -E '^  [✗!] ' || true)
+  # Alternation, not [✗!]: outside a UTF-8 locale ✗ is three bytes and a
+  # bracket expression never matches it.
+  problems=$(printf '%s\n' "$out" | grep -E '^  (✗|!) ' || true)
   [ -n "$problems" ] || return 0
   echo "jb-toolkit: '$name' departs from RULES.md. Fix it as part of this session (R0.2), on a branch, and tell the owner what changed:"
   printf '%s\n' "$problems"
