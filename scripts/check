@@ -29,4 +29,15 @@ refuses git commit -m "feat: add a" -m "Co-authored-by: x <x@y>"
 git commit -q -m "feat: add a"
 git switch -q -c release/v0.2.0 && "$root/bin/jb" bump 0.2.0 >/dev/null
 [ "$(.toolkit/version)" = 0.2.0 ] || { echo "bump failed" >&2; exit 1; }
+
+# install into a fake HOME whose CLAUDE.md is a dotfiles symlink: running it
+# twice must keep the link, the existing rules and exactly one block.
+home=$tmp/home && mkdir -p "$home/.claude" "$tmp/dotfiles"
+echo "# my rules" > "$tmp/dotfiles/CLAUDE.md"
+ln -s "$tmp/dotfiles/CLAUDE.md" "$home/.claude/CLAUDE.md"
+HOME=$home "$root/bin/jb" install >/dev/null 2>&1
+HOME=$home "$root/bin/jb" install >/dev/null 2>&1
+[ -L "$home/.claude/CLAUDE.md" ] || { echo "install replaced a symlinked CLAUDE.md" >&2; exit 1; }
+[ "$(grep -c '>>> jb-toolkit' "$tmp/dotfiles/CLAUDE.md")" = 1 ] || { echo "install left other than one block in CLAUDE.md" >&2; exit 1; }
+grep -qx '# my rules' "$tmp/dotfiles/CLAUDE.md" || { echo "install lost existing CLAUDE.md content" >&2; exit 1; }
 echo "toolkit check passed"
