@@ -35,10 +35,12 @@ put_block() {
   touch "$file"
   if grep -qF "$start" "$file"; then
     # The block goes through the environment: BSD awk refuses newlines in -v.
+    # Written back in place, not mv'd: the file may be a symlink (stow,
+    # dotfiles) and replacing it would cut the link.
     JB_BLOCK=$block awk -v s="$start" -v e="$end" '
       $0 == s { print ENVIRON["JB_BLOCK"]; skip = 1; next }
       $0 == e { skip = 0; next }
-      !skip' "$file" > "$file.jb-tmp" && mv "$file.jb-tmp" "$file"
+      !skip' "$file" > "$file.jb-tmp" && cat "$file.jb-tmp" > "$file" && rm "$file.jb-tmp"
   else
     [ -s "$file" ] && [ -n "$(tail -c1 "$file")" ] && echo >> "$file"
     [ -s "$file" ] && echo >> "$file"
