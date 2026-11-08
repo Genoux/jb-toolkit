@@ -16,4 +16,5 @@ scripts/check
 
 ## Release
 
-See the toolkit's `RULES.md` R4: `jb bump X.Y.Z` on a branch, merge, `jb tag` on main.
+Releases follow the toolkit's `RULES.md` R4: `jb bump X.Y.Z` on a branch,
+merge, then `jb tag` on main.
