@@ -11,6 +11,7 @@
 #   jb check [path]                  report what departs from RULES.md
 #   jb bump <X.Y.Z>                  set the version and commit the bump (on a branch)
 #   jb tag                           tag vX.Y.Z on an up-to-date main
+#   jb guard / jb stop               (agent hooks) refuse hook bypasses / run scripts/check before stopping
 #   jb rules                         print the path to RULES.md
 #
 set -euo pipefail
@@ -20,32 +21,69 @@ TEMPLATES="$TOOLKIT/templates"
 TOOLKIT_VERSION="$(tr -d '[:space:]' < "$TOOLKIT/VERSION")"
 PROJECTS="${JB_PROJECTS:-$(dirname "$TOOLKIT")}"
 STACKS="rust js static none"
+KIT="${JB_KIT:-$TOOLKIT/kit.json}"
+RULES_POINTER="Every agent follows the shared rules in \`.toolkit/RULES.md\` (managed by jb-toolkit); deliberate exceptions are in \`.jb-exceptions\`."
+# gentle-ai 4.x replaces its own binary on any invocation, even --version or
+# --help (checked in its source, internal/app/selfupdate.go). A kit pin only
+# holds if every call, here and in the kit's setup steps, opts out.
+export GENTLE_AI_NO_SELF_UPDATE=1
 VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc|experimental)\.[0-9]+)?$'
 
 die()  { echo "jb: $*" >&2; exit 1; }
 note() { echo "  $*"; }
 
-usage() { sed -n '3,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,/^set /p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
-# Replace the block between the jb-toolkit markers in $1 with stdin, or append it.
-put_block() {
-  local file=$1 start=$2 end=$3 block
-  block=$(cat)
+# "~/x" for paths under $HOME (a literal ~ in a pattern substitution is bash 4).
+tilde() { case "$1" in "$HOME"/*) printf '~%s' "${1#"$HOME"}" ;; *) printf '%s' "$1" ;; esac; }
+
+# Rewrites the JSON file $1 with the jq arguments that follow, and never loses
+# it: the result goes to a temp file first and must be non-empty valid JSON,
+# then is written in place (not mv'd, the file may be a symlink). An empty file
+# counts as {}; JSON jq cannot read (comments, trailing commas) or a dangling
+# link is left alone with a note. The first backup is kept, never overwritten.
+json_edit() {
+  local file=$1 tmp; shift
+  if [ -L "$file" ] && [ ! -e "$file" ]; then note "$file is a dangling link: skipped"; return 1; fi
   mkdir -p "$(dirname "$file")"
-  touch "$file"
-  if grep -qF "$start" "$file"; then
-    # The block goes through the environment: BSD awk refuses newlines in -v.
-    # Written back in place, not mv'd: the file may be a symlink (stow,
-    # dotfiles) and replacing it would cut the link.
-    JB_BLOCK=$block awk -v s="$start" -v e="$end" '
-      $0 == s { print ENVIRON["JB_BLOCK"]; skip = 1; next }
-      $0 == e { skip = 0; next }
-      !skip' "$file" > "$file.jb-tmp" && cat "$file.jb-tmp" > "$file" && rm "$file.jb-tmp"
+  [ -s "$file" ] || echo '{}' > "$file"
+  if ! jq empty "$file" 2>/dev/null; then note "$file is not valid JSON (comments?): left untouched"; return 1; fi
+  [ -e "$file.jb-backup" ] || cp "$file" "$file.jb-backup"
+  tmp=$(mktemp "$file.jb-tmp.XXXXXX") || return 1
+  if jq "$@" "$file" > "$tmp" && [ -s "$tmp" ] && jq empty "$tmp" 2>/dev/null; then
+    cat "$tmp" > "$file"; rm -f "$tmp"
   else
+    rm -f "$tmp"; note "$file: the edit produced no valid JSON; left untouched"; return 1
+  fi
+}
+
+# Replace the block between the markers in $1 with stdin, or append it. Never
+# writes through a symlink, and refuses (return 1, file untouched) unless each
+# marker is a whole line appearing once, the end after the start, or neither.
+put_block() {
+  local file=$1 start=$2 end=$3 block starts ends start_line end_line
+  block=$(cat)
+  if [ -L "$file" ]; then note "$file is a symlink: not written through"; return 1; fi
+  mkdir -p "$(dirname "$file")"
+  [ -e "$file" ] || : > "$file"
+  starts=$(grep -cxF -- "$start" "$file" || true); ends=$(grep -cxF -- "$end" "$file" || true)
+  if [ "$starts" = 0 ] && [ "$ends" = 0 ]; then
     [ -s "$file" ] && [ -n "$(tail -c1 "$file")" ] && echo >> "$file"
     [ -s "$file" ] && echo >> "$file"
     printf '%s\n' "$block" >> "$file"
+    return 0
   fi
+  start_line=$(grep -nxF -- "$start" "$file" | sed -n 1p | cut -d: -f1); end_line=$(grep -nxF -- "$end" "$file" | sed -n 1p | cut -d: -f1)
+  if [ "$starts" != 1 ] || [ "$ends" != 1 ] || [ "$end_line" -lt "$start_line" ]; then
+    note "$file: the managed block's markers are missing, duplicated or out of order: left untouched"
+    return 1
+  fi
+  # The block goes through the environment: BSD awk refuses newlines in -v.
+  JB_BLOCK=$block awk -v s="$start" -v e="$end" '
+    $0 == s { print ENVIRON["JB_BLOCK"]; skip = 1; next }
+    $0 == e { skip = 0; next }
+    !skip' "$file" > "$file.jb-tmp" && [ -s "$file.jb-tmp" ] && cat "$file.jb-tmp" > "$file"
+  rm -f "$file.jb-tmp"
 }
 
 detect_stack() {
@@ -76,57 +114,523 @@ has_host_bind_mount() {
     END { exit !found }' "$1"
 }
 
+# Name of the hook manager the project already uses, if any. Run inside the repo.
+hook_manager() {
+  local path
+  if   [ -f lefthook.yml ] || [ -f .lefthook.yml ] || [ -f lefthook.yaml ] || [ -f .lefthook.yaml ]; then echo lefthook
+  elif [ -d .husky ]; then echo husky
+  elif [ -f .pre-commit-config.yaml ]; then echo pre-commit
+  else
+    path=$(git config core.hooksPath || true)
+    [ -z "$path" ] || [ "$path" = .githooks ] || echo "core.hooksPath ($path)"
+  fi
+}
+
 render() { # template -> dest, filling {{NAME}} {{STACK}}
   sed -e "s/{{NAME}}/$NAME/g" -e "s/{{STACK}}/$STACK/g" "$1" > "$2"
 }
 
+# ---------------------------------------------------------------- agents
+# kit.json lists the agents the owner uses, with the id each external tool
+# knows them by. Everything agent-specific lives in the adapter functions
+# below, each a case per agent: supporting one more agent means adding a case
+# to the adapters it needs, and an agent that is unknown, not installed or
+# lacking a documented mechanism is skipped silently.
+agent_dir() {
+  case "$1" in
+    claude-code)    echo "$HOME/.claude" ;;
+    codex)          echo "$HOME/.codex" ;;
+    cursor)         echo "$HOME/.cursor" ;;
+    gemini-cli)     echo "$HOME/.gemini" ;;
+    github-copilot) echo "$HOME/.copilot" ;;
+    opencode)       echo "$HOME/.config/opencode" ;;
+  esac
+}
+# User-level instructions file; Cursor documents none (its user rules live in
+# its settings UI), so it only gets the project's AGENTS.md.
+agent_rules_file() {
+  case "$1" in
+    claude-code)    echo CLAUDE.md ;;
+    codex)          echo AGENTS.md ;;
+    gemini-cli)     echo GEMINI.md ;;
+    github-copilot) echo copilot-instructions.md ;;
+    opencode)       echo AGENTS.md ;;
+  esac
+}
+# Agents with a documented JSON hook system. opencode has only JS plugins.
+agent_hook_file() {
+  case "$1" in
+    claude-code)    echo settings.json ;;
+    codex)          echo hooks.json ;;
+    cursor)         echo hooks.json ;;
+    gemini-cli)     echo settings.json ;;
+    github-copilot) echo hooks/jb-toolkit.json ;;
+  esac
+}
+agent_skills_dir() {
+  case "$1" in
+    claude-code) echo "$HOME/.claude/skills" ;;
+    codex)       echo "$HOME/.agents/skills" ;;
+  esac
+}
+agent_trust_note() {
+  case "$1" in
+    codex) note "Codex skips new hooks until you trust them: open /hooks in Codex and approve the three jb hooks" ;;
+  esac
+}
+# An @import where the agent documents one, otherwise a pointer the agent is
+# told to follow.
+agent_imports() {
+  case "$1" in
+    claude-code|gemini-cli) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+agent_rules_block() {
+  if agent_imports "$1"; then cat <<TEXT
+Every project follows the jb-toolkit rules below unless its own AGENTS.md
+records an exception. Managed by \`jb install\`; edit the rules in the toolkit.
+@$TOOLKIT/RULES.md
+TEXT
+  else cat <<TEXT
+Before any work, read and follow $TOOLKIT/RULES.md. Every project follows it
+unless its own AGENTS.md records an exception.
+TEXT
+  fi
+}
+agent_personal_block() {
+  local dir; dir=$(agent_dir "$1")
+  if [ "$1" = claude-code ]; then echo "@~/.claude/personal.md"
+  elif agent_imports "$1"; then echo "@$dir/personal.md"
+  else echo "Also read and follow ~/${dir#"$HOME"/}/personal.md (the owner's own rules)."; fi
+}
+# Gemini reads GEMINI.md only; AGENTS.md is read when settings name it
+# (https://geminicli.com/docs/cli/gemini-md/), so a project's AGENTS.md
+# reaches it without a pointer file in every project.
+agent_setup() {
+  local file
+  case "$1" in
+    gemini-cli)
+      file="$(agent_dir "$1")/settings.json"
+      json_edit "$file" '.context.fileName = ([(.context.fileName // ["GEMINI.md"])[], "AGENTS.md"] | unique)' || true ;;
+  esac
+}
+
+# Work an agent's config needs after the kit has run. Codex: gentle-ai's engram
+# component sets model_instructions_file and experimental_compact_prompt_file
+# (internal/components/engram/inject.go, no option skips them); the owner keeps
+# Codex's built-in prompt, so those two top-level keys are removed again.
+agent_after_kit() {
+  case "$1" in
+    codex) strip_toml_top_keys "$(agent_dir "$1")/config.toml" model_instructions_file experimental_compact_prompt_file ;;
+  esac
+}
+
+# Delete the given top-level keys (one line each, before the first table) from
+# a TOML file, touching nothing else. Edited through a temp file, written in
+# place so a symlink stays, and skipped when the file is absent or dangling.
+strip_toml_top_keys() {
+  local file=$1 tmp keys; shift
+  [ -f "$file" ] || return 0
+  [ -z "$(tail -c1 "$file")" ] || { note "$(tilde "$file") has no final newline: left untouched"; return 0; }
+  keys=$*
+  tmp=$(mktemp "$file.jb-tmp.XXXXXX") || return 0
+  awk -v keys="$keys" '
+    BEGIN { n = split(keys, wanted, " ") }
+    /^[[]/ { in_table = 1 }
+    !in_table { drop = 0; for (i = 1; i <= n; i++) if ($0 ~ "^" wanted[i] "[ \t]*=") drop = 1; if (drop) next }
+    1' "$file" > "$tmp"
+  if ! cmp -s "$file" "$tmp"; then
+    [ -s "$tmp" ] || [ ! -s "$file" ] || { rm -f "$tmp"; return 0; }
+    cat "$tmp" > "$file" && note "removed gentle-ai's prompt-file keys from $(tilde "$file")"
+  fi
+  rm -f "$tmp"
+}
+
+agent_value() { jq -r --arg id "$1" --arg k "$2" '.agents[]? | select(.id == $id) | .[$k] // empty' "$KIT"; }
+
+present_agents() {
+  local agent dir
+  [ -f "$KIT" ] || return 0
+  for agent in $(jq -r '.agents[]?.id' "$KIT"); do
+    dir=$(agent_dir "$agent")
+    [ -z "$dir" ] || [ ! -d "$dir" ] || echo "$agent"
+  done
+}
+
+# {agents:KEY} in a kit command stands for the present agents' KEY ids, comma
+# separated: each tool names the agents its own way.
+expand_agents() {
+  local text=$1 key values agent needs agents_re='\{agents:([A-Za-z]+)\}'
+  while [[ $text =~ $agents_re ]]; do
+    key=${BASH_REMATCH[1]}
+    values=$(for agent in $(present_agents); do
+      needs=$(agent_value "$agent" "${key}Needs")
+      [ -z "$needs" ] || command -v "$needs" >/dev/null || continue
+      agent_value "$agent" "$key"
+    done | paste -sd, -)
+    text=${text//"{agents:$key}"/$values}
+  done
+  printf '%s\n' "$text"
+}
+
+# Commands call jb through ~/.local/bin (which jb install links), so moving
+# the toolkit changes nothing; entries from older runs, with the toolkit's
+# absolute path, are replaced by pattern too, and everything else stays. Per agent: the event names, the
+# tool matcher where the agent has one, and the entry shape come from that
+# agent's hook documentation; Cursor documents no sessionStart output, so it
+# gets no session hook.
+wire_hooks() {
+  local agent=$1 file=$2 spec flat=false jb='"$HOME/.local/bin/jb"'
+  case "$agent" in
+    claude-code|codex)
+      spec=$(jq -nc --arg s "$jb session" --arg g "$jb guard" --arg t "$jb stop" '[
+        {event: "SessionStart", command: $s, timeout: 15},
+        {event: "PreToolUse", matcher: "Bash", command: $g, timeout: 5},
+        {event: "Stop", command: $t, timeout: 180}]') ;;
+    gemini-cli)
+      spec=$(jq -nc --arg s "$jb session --agent gemini-cli" --arg g "$jb guard --agent gemini-cli" --arg t "$jb stop --agent gemini-cli" '[
+        {event: "SessionStart", command: $s, timeout: 15000},
+        {event: "BeforeTool", matcher: "run_shell_command", command: $g, timeout: 5000},
+        {event: "AfterAgent", command: $t, timeout: 180000}]') ;;
+    cursor)
+      flat=true
+      spec=$(jq -nc --arg g "$jb guard --agent cursor" --arg t "$jb stop --agent cursor" '[
+        {event: "beforeShellExecution", command: $g},
+        {event: "stop", command: $t}]') ;;
+    github-copilot)
+      mkdir -p "$(dirname "$file")"
+      jq -n --arg s "$jb session --agent github-copilot" --arg g "$jb guard --agent github-copilot" --arg t "$jb stop --agent github-copilot" '{
+        version: 1,
+        hooks: {
+          sessionStart: [{type: "command", bash: $s, timeoutSec: 15}],
+          preToolUse: [{type: "command", bash: $g, timeoutSec: 5}],
+          agentStop: [{type: "command", bash: $t, timeoutSec: 180}]}}' > "$file.jb-tmp" && [ -s "$file.jb-tmp" ] && cat "$file.jb-tmp" > "$file"
+      rm -f "$file.jb-tmp"
+      return 0 ;;
+    *) return 0 ;;
+  esac
+  json_edit "$file" --argjson spec "$spec" --argjson flat "$flat" '
+    def ours: test("bin/jb.? (session|guard|stop)( --agent [a-z-]+)?$");
+    def foreign(event): [ (.hooks[event] // [])[]
+      | select([ (.command // empty), (.hooks[]?.command // empty) | strings | select(ours) ] | length == 0) ];
+    def entry: if $flat then {command} else ({matcher}  | with_entries(select(.value != null))) + {hooks: [{type: "command", command, timeout}]} end;
+    def is_ours: [ (.command // empty), (.hooks[]?.command // empty) | strings | select(ours) ] | length > 0;
+    def place(event; new): (.hooks[event] // []) as $list
+      | ([ $list[] | is_ours ] | index(true)) as $at
+      | if $at == null then $list + [new]
+        else [ $list | to_entries[] | if .key == $at then new elif (.value | is_ours) then empty else .value end ] end;
+    reduce $spec[] as $h (.; .hooks[$h.event] = place($h.event; $h | entry))
+    | if $flat then .version = 1 else . end'
+}
+
+# ---------------------------------------------------------------- kit
+# kit.json lists what every machine should have. Each function prints the
+# items still missing, one compact JSON object per line.
+# Where gentle-ai writes its managed persona block, for the agents where it
+# writes one into the rules file itself (checked against 4.4.0 in isolation).
+agent_gentle_file() {
+  case "$1" in
+    claude-code|codex|opencode) echo "$(agent_dir "$1")/$(agent_rules_file "$1")" ;;
+  esac
+}
+
+# True when gentle-ai has configured this machine: its state exists and every
+# rules file it manages carries its block. A kit item's present test.
+gentle_ai_configured() {
+  local agent file
+  command -v gentle-ai >/dev/null || return 1
+  [ -f "${GENTLE_AI_HOME:-$HOME/.gentle-ai}/state.json" ] || return 1
+  for agent in $(present_agents); do
+    [ -n "$(agent_value "$agent" gentleAi)" ] || continue
+    file=$(agent_gentle_file "$agent"); [ -n "$file" ] || continue
+    grep -qxF '<!-- gentle-ai:persona -->' "$file" 2>/dev/null || return 1
+  done
+  return 0
+}
+
+# A skill counts as installed when the CLI's lock records the pinned ref and
+# every present agent that has a known skills dir holds it.
+skill_present() {
+  local name=$1 ref=$2 agents=$3 agent dir
+  jq -e --arg n "$name" --arg r "$ref" '.skills[$n].ref == $r' "$HOME/.agents/.skill-lock.json" >/dev/null 2>&1 || return 1
+  for agent in $agents; do
+    dir=$(agent_skills_dir "$agent")
+    [ -z "$dir" ] || [ -e "$dir/$name" ] || return 1
+  done
+  return 0
+}
+
+# Prints item $1 when it is missing from this machine, narrowed to what is
+# missing. An item bound to an agent that is not installed is never missing.
+kit_item_missing() {
+  local item=$1 kind agent dir name ref absent agents probe
+  kind=$(jq -r .kind <<<"$item"); agent=$(jq -r '.agent // empty' <<<"$item")
+  if [ -n "$agent" ]; then
+    dir=$(agent_dir "$agent")
+    { [ -n "$dir" ] && [ -d "$dir" ]; } || return 0
+  fi
+  case "$kind" in
+    plugin)
+      name=$(jq -r .name <<<"$item")
+      jq -e --arg id "$name" '.plugins[$id]' "$HOME/.claude/plugins/installed_plugins.json" >/dev/null 2>&1 || echo "$item" ;;
+    skills)
+      ref=$(jq -r .ref <<<"$item"); agents=$(present_agents)
+      [ -n "$agents" ] || return 0
+      absent=$(jq -r '.names[]' <<<"$item" | while IFS= read -r name; do
+        skill_present "$name" "$ref" "$agents" || echo "$name"
+      done | jq -R . | jq -sc .)
+      [ "$absent" = "[]" ] || jq -c --argjson names "$absent" '.names = $names' <<<"$item" ;;
+    command)
+      ( PATH="$HOME/.local/bin:$PATH"; eval "$(jq -r .present <<<"$item")" ) || echo "$item" ;;
+    release)
+      name=$(jq -r '.binary // .name' <<<"$item"); ref=$(jq -r .version <<<"$item")
+      probe=$(PATH="$HOME/.local/bin:$PATH" "$name" --version 2>/dev/null || true)
+      case "$probe" in *"$ref"*) ;; *) echo "$item" ;; esac ;;
+  esac
+}
+
+kit_missing() {
+  local item
+  [ -f "$KIT" ] || return 0
+  while IFS= read -r item; do kit_item_missing "$item"; done < <(jq -c '.items[]' "$KIT")
+}
+
+sha256_of() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+
+# A tool shipped as a GitHub release asset: fetched from the pinned tag, its
+# sha256 checked against the one recorded in kit.json before anything runs.
+install_release() {
+  local item=$1 name repo version key asset file expected dir actual
+  name=$(jq -r '.binary // .name' <<<"$item"); repo=$(jq -r .repo <<<"$item"); version=$(jq -r .version <<<"$item")
+  key="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+  asset=$(jq -c --arg k "$key" '.assets[$k] // empty' <<<"$item")
+  [ -n "$asset" ] || { note "kit: $name $version has no build for $key"; return 0; }
+  file=$(jq -r .file <<<"$asset"); expected=$(jq -r .sha256 <<<"$asset")
+  dir=$(mktemp -d)
+  if ! curl -fsSL -o "$dir/$file" "https://github.com/$repo/releases/download/v$version/$file"; then
+    note "kit: could not download $name $version"; rm -rf "$dir"; return 0
+  fi
+  actual=$(sha256_of "$dir/$file")
+  if [ "$actual" != "$expected" ]; then
+    note "kit: $name $version failed its checksum (got $actual); not installed"; rm -rf "$dir"; return 0
+  fi
+  mkdir -p "$HOME/.local/bin"
+  tar xzf "$dir/$file" -C "$dir" && install -m 755 "$dir/$name" "$HOME/.local/bin/$name" \
+    && echo "kit: installed $name $version into ~/.local/bin" || note "kit: could not unpack $name $version"
+  rm -rf "$dir"
+  local after output
+  after=$(expand_agents "$(jq -r '.after // empty' <<<"$item")")
+  [ -n "$after" ] || return 0
+  output=$(PATH="$HOME/.local/bin:$PATH" run_kit_command "$after") \
+    || note "kit: $name was installed but its setup step failed ($after): $(printf '%s' "$output" | tail -n 1)"
+}
+
+# The agents' rules and hook files, the ones a kit command may touch.
+kit_config_files() {
+  local agent dir name
+  for agent in $(present_agents); do
+    dir=$(agent_dir "$agent")
+    for name in "$(agent_rules_file "$agent")" "$(agent_hook_file "$agent")"; do
+      [ -z "$name" ] || echo "$dir/$name"
+    done
+  done
+}
+
+# Some tools (gentle-ai: "refusing to read symlink") will not touch a symlinked
+# config file, and the owner's dotfiles link the agents' files. A kit command
+# runs on regular copies; the result is written back through the link and the
+# link restored, also after a failure or an interrupt, and a copy left by a
+# crashed run is restored first.
+JB_LINKED=()
+restore_links() {
+  local file link target
+  for file in ${JB_LINKED[@]+"${JB_LINKED[@]}"}; do
+    [ -e "$file.jb-link" ] || continue
+    { read -r link; read -r target; } < "$file.jb-link"
+    if [ -L "$file" ]; then rm -f "$file.jb-link"
+    elif cp "$file" "$target" && rm "$file"; then ln -s "$link" "$file" && rm -f "$file.jb-link"
+    else note "$file: could not be written back to $target; the copy is kept, see $file.jb-link"; fi
+  done
+  JB_LINKED=()
+}
+
+run_kit_command() {
+  local command=$1 file link target status=0
+  JB_LINKED=()
+  while IFS= read -r file; do JB_LINKED+=("$file"); done < <(kit_config_files)
+  restore_links
+  for file in $(kit_config_files); do
+    [ -L "$file" ] && [ -e "$file" ] || continue
+    link=$(readlink "$file"); target=$(readlink -f "$file")
+    printf '%s\n%s\n' "$link" "$target" > "$file.jb-link"
+    if rm "$file" && cp "$target" "$file"; then JB_LINKED+=("$file")
+    else ln -sfn "$link" "$file"; rm -f "$file.jb-link"; fi
+  done
+  trap 'restore_links; exit 130' INT TERM
+  ( PATH="$HOME/.local/bin:$PATH"; eval "$command" ) 2>&1 </dev/null || status=$?
+  trap - INT TERM
+  restore_links
+  return $status
+}
+
+# True (with the reason printed) while a rules file the kit would write is
+# still linked into the dotfiles without a personal.md to take over, or dangles.
+rules_blocked() {
+  local agent dir file
+  for agent in $(present_agents); do
+    dir=$(agent_dir "$agent"); [ -n "$(agent_rules_file "$agent")" ] || continue
+    file="$dir/$(agent_rules_file "$agent")"
+    if [ -L "$file" ]; then echo "$(tilde "$file") is still a symlink"; return 0; fi
+  done
+  return 1
+}
+
+install_kit() {
+  local item missing kind name source ref names cli agents agent command reason output
+  cli=$(jq -r '.skillsCli' "$KIT" 2>/dev/null) || return 0
+  while IFS= read -r item; do
+    missing=$(kit_item_missing "$item")
+    [ -n "$missing" ] || continue
+    if [ "$(jq -r '.writesRules // false' <<<"$missing")" = true ] && reason=$(rules_blocked); then
+      note "kit: skipped $(jq -r '.name // .names[0]' <<<"$missing") ($reason): merge the dotfiles, restow, then run jb install again"
+      continue
+    fi
+    kind=$(jq -r .kind <<<"$missing")
+    case "$kind" in
+      plugin)
+        name=$(jq -r .name <<<"$missing"); source=$(jq -r .source <<<"$missing")
+        if command -v claude >/dev/null; then
+          claude plugin marketplace add "$source" >/dev/null 2>&1 || true
+          claude plugin install "$name" >/dev/null 2>&1 && echo "kit: installed plugin $name" || note "kit: could not install $name: claude plugin install $name"
+        else note "kit: claude not found; run: claude plugin marketplace add $source && claude plugin install $name"; fi ;;
+      skills)
+        source=$(jq -r .source <<<"$missing"); ref=$(jq -r .ref <<<"$missing")
+        names=$(jq -r '.names | join(" ")' <<<"$missing")
+        agents=$(for agent in $(present_agents); do agent_value "$agent" skills; done | paste -sd' ' -)
+        if command -v npx >/dev/null; then
+          # shellcheck disable=SC2086
+          npx --yes "$cli" add "$source#$ref" -g -a $agents -y -s $names >/dev/null 2>&1 \
+            && echo "kit: installed skills $names (pinned $ref)" || note "kit: could not install skills $names from $source"
+        else note "kit: npx not found; install node, then rerun jb install"; fi ;;
+      command)
+        name=$(jq -r .name <<<"$missing"); command=$(expand_agents "$(jq -r .install <<<"$missing")")
+        output=$(run_kit_command "$command") && echo "kit: installed $name" \
+          || note "kit: could not install $name ($command): $(printf '%s' "$output" | tail -n 1)" ;;
+      release) install_release "$missing" ;;
+    esac
+  done < <(jq -c '.items[]' "$KIT")
+  rm -f "$(kit_cache_file)"
+}
+
+kit_cache_file() { echo "${XDG_CACHE_HOME:-$HOME/.cache}/jb-toolkit/kit-missing"; }
+mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+
+# Everything the missing-items answer depends on that changes by itself:
+# the kit, the installers' state files, the agents present and the release
+# binaries. A stamp older than an hour is not trusted either.
+kit_cache_key() {
+  local item path
+  { cksum < "$KIT"
+    for path in "$HOME/.claude/plugins/installed_plugins.json" "$HOME/.agents/.skill-lock.json" $(kit_config_files); do
+      echo "$path $(mtime_of "$path")"
+    done
+    while IFS= read -r item; do
+      path=$(PATH="$HOME/.local/bin:$PATH" command -v "$item" 2>/dev/null || true); echo "$item $path $([ -z "$path" ] || mtime_of "$path")"
+    done < <(jq -r '.items[] | select(.kind == "release") | .binary // .name' "$KIT")
+  } | cksum | cut -d' ' -f1
+}
+
+report_missing_kit() {
+  local labels cache key now stamp
+  [ -f "$KIT" ] || return 0
+  cache=$(kit_cache_file); key=$(kit_cache_key); now=$(date +%s)
+  if [ -f "$cache" ]; then
+    { read -r stamp; read -r cached_key; IFS= read -r labels; } < "$cache"
+    if [ "${cached_key:-}" = "$key" ] && [ $((now - ${stamp:-0})) -lt 3600 ]; then
+      [ -z "$labels" ] || echo "jb-toolkit: this machine lacks baseline kit items: $labels. Mention it to the owner once; jb install adds them."
+      return 0
+    fi
+  fi
+  labels=$(kit_missing | jq -r 'if .kind == "skills" then .names[] else .name end' | paste -sd, - | sed 's/,/, /g')
+  mkdir -p "$(dirname "$cache")" && printf '%s\n%s\n%s\n' "$now" "$key" "$labels" > "$cache"
+  [ -z "$labels" ] || echo "jb-toolkit: this machine lacks baseline kit items: $labels. Mention it to the owner once; jb install adds them."
+}
+
 # ---------------------------------------------------------------- install
+# The agent's rules file holds the jb block, and an import of the owner's own
+# rules when they live in personal.md. A symlinked rules file (stow, dotfiles)
+# is generated content here, so it becomes a regular file, but only once
+# personal.md exists to take over what the owner wrote in it; until then it is
+# left linked and unwritten, so nothing ever reaches the shared dotfiles.
+anchor_rules() {
+  local agent=$1 file=$2 personal
+  personal="$(agent_dir "$agent")/personal.md"
+  if [ -L "$file" ]; then
+    if [ -e "$personal" ]; then rm "$file"
+    else
+      note "$agent: $(tilde "$file") is a symlink and $(tilde "$personal") does not exist: left linked and unwritten. Move your own rules to personal.md in your dotfiles, then rerun jb install"
+      return 0
+    fi
+  fi
+  { echo "<!-- >>> jb-toolkit -->"; agent_rules_block "$agent"; echo "<!-- <<< jb-toolkit -->"; } \
+    | put_block "$file" "<!-- >>> jb-toolkit -->" "<!-- <<< jb-toolkit -->" || return 0
+  if [ -e "$personal" ]; then
+    { echo "<!-- >>> jb-personal -->"; agent_personal_block "$agent"; echo "<!-- <<< jb-personal -->"; } \
+      | put_block "$file" "<!-- >>> jb-personal -->" "<!-- <<< jb-personal -->" || true
+  fi
+  echo "$agent: anchored RULES.md in $(tilde "$file")"
+}
+
+# The links jb makes point into the toolkit: from a linked worktree they would
+# dangle once it is removed.
+refuse_worktree() {
+  local git_dir common
+  [ -z "${JB_ALLOW_WORKTREE:-}" ] || return 0
+  git_dir=$(cd "$TOOLKIT" && git rev-parse --absolute-git-dir 2>/dev/null) || return 0
+  common=$(cd "$TOOLKIT" && cd "$(git rev-parse --git-common-dir)" && pwd -P)
+  [ "$git_dir" = "$common" ] || die "run jb install from the toolkit's main checkout ($(dirname "$common")), not from this linked worktree ($TOOLKIT)"
+}
+
 cmd_install() {
+  refuse_worktree
   local bindir="$HOME/.local/bin"
   mkdir -p "$bindir"
   ln -sf "$TOOLKIT/bin/jb" "$bindir/jb"
   echo "linked $bindir/jb"
   case ":$PATH:" in *":$bindir:"*) ;; *) note "add $bindir to PATH in your shell profile" ;; esac
 
-  put_block "$HOME/.claude/CLAUDE.md" "<!-- >>> jb-toolkit -->" "<!-- <<< jb-toolkit -->" <<EOF
-<!-- >>> jb-toolkit -->
-Every project follows the jb-toolkit rules below unless its own AGENTS.md
-records an exception. Managed by \`jb install\`; edit the rules in the toolkit.
-@$TOOLKIT/RULES.md
-<!-- <<< jb-toolkit -->
-EOF
-  echo "anchored RULES.md in ~/.claude/CLAUDE.md"
-
-  mkdir -p "$HOME/.claude/skills"
-  local s
-  for s in "$TOOLKIT"/skills/*/; do
-    s=${s%/}
-    ln -sfn "$s" "$HOME/.claude/skills/$(basename "$s")"
+  command -v jq >/dev/null || die "jq is needed to wire the agent hooks"
+  local agent dir skills hooks s
+  for agent in $(present_agents); do
+    dir=$(agent_dir "$agent")
+    [ -z "$(agent_rules_file "$agent")" ] || anchor_rules "$agent" "$dir/$(agent_rules_file "$agent")"
+    skills=$(agent_skills_dir "$agent")
+    if [ -n "$skills" ]; then
+      mkdir -p "$skills"
+      for s in "$TOOLKIT"/skills/*/; do
+        if [ -d "$skills/$(basename "$s")" ] && [ ! -L "$skills/$(basename "$s")" ]; then
+          note "$agent: $(tilde "$skills/$(basename "$s")") is a real directory: not replaced with a link"
+        else ln -sfn "${s%/}" "$skills/$(basename "$s")"; fi
+      done
+    fi
+    agent_setup "$agent"
+    hooks=$(agent_hook_file "$agent")
+    if [ -n "$hooks" ]; then
+      if wire_hooks "$agent" "$dir/$hooks"; then
+        echo "$agent: wired the agent hooks in $(tilde "$dir/$hooks")"
+        agent_trust_note "$agent"
+      else
+        echo "$agent: hooks not wired in $(tilde "$dir/$hooks") (see above); fix the file and rerun jb install"
+      fi
+    else
+      echo "$agent: no documented hook system; rules only"
+    fi
   done
   echo "linked skills: $(cd "$TOOLKIT/skills" && echo *)"
 
-  # SessionStart hook: tells the agent where the current project stands.
-  local settings="$HOME/.claude/settings.json" hook
-  hook="'$TOOLKIT/bin/jb' session"
-  command -v jq >/dev/null || die "jq is needed to add the SessionStart hook"
-  [ -f "$settings" ] || echo '{}' > "$settings"
-  cp "$settings" "$settings.jb-backup"
-  jq --arg cmd "$hook" '
-    .hooks.SessionStart = (
-      [ (.hooks.SessionStart // [])[] | select((.hooks // []) | all(.command | test("jb-toolkit/bin/jb.? session") | not)) ]
-      + [ { hooks: [ { type: "command", command: $cmd, timeout: 15 } ] } ]
-    )' "$settings.jb-backup" > "$settings"
-  echo "added SessionStart hook to ~/.claude/settings.json (backup: settings.json.jb-backup)"
-
-  if [ -d "$HOME/.codex" ]; then
-    put_block "$HOME/.codex/AGENTS.md" "<!-- >>> jb-toolkit -->" "<!-- <<< jb-toolkit -->" <<EOF
-<!-- >>> jb-toolkit -->
-Before any work, read and follow $TOOLKIT/RULES.md. Every project follows it
-unless its own AGENTS.md records an exception.
-<!-- <<< jb-toolkit -->
-EOF
-    echo "anchored RULES.md in ~/.codex/AGENTS.md"
-  fi
+  install_kit
+  for agent in $(present_agents); do agent_after_kit "$agent"; done
 }
 
 # ---------------------------------------------------------------- sync
@@ -149,18 +653,24 @@ sync_into() {
     fi
     chmod +x .githooks/* .toolkit/version
     echo "$TOOLKIT_VERSION" > .toolkit/toolkit-version
-    { cat "$TEMPLATES/managed/gitignore-block"; } | put_block .gitignore "# >>> jb-toolkit (managed by jb sync; add your own lines outside this block)" "# <<< jb-toolkit"
+    cp "$TOOLKIT/RULES.md" .toolkit/RULES.md
+    { cat "$TEMPLATES/managed/gitignore-block"; } | put_block .gitignore "# >>> jb-toolkit (managed by jb sync; add your own lines outside this block)" "# <<< jb-toolkit" || true
     while IFS= read -r line; do
       [ -n "$line" ] && ! grep -qxF "$line" .gitignore && echo "$line" >> .gitignore
     done < "$TEMPLATES/stacks/$STACK/gitignore"
-    git config core.hooksPath .githooks
+    # core.hooksPath lives in the config shared by every worktree, so there is
+    # no per-worktree way to run two managers; the project's own wins.
+    local manager; manager=$(hook_manager)
+    if [ -n "$manager" ]; then
+      note "hooks: left to $manager; .githooks/ is not enabled (R3)"
+    else
+      git config core.hooksPath .githooks
+    fi
 
     # Agent settings (untracked, R3.4): publishing tools are denied, not just
     # discouraged (R2). Merged, so the project's own entries stay.
     mkdir -p .claude
-    [ -f .claude/settings.json ] || echo '{}' > .claude/settings.json
-    jq '.permissions.deny = ((.permissions.deny // []) + ["Artifact", "mcp__claude_ai_Claude_Docs", "Bash(gh gist create:*)"] | unique)' \
-      .claude/settings.json > .claude/settings.json.jb-tmp && mv .claude/settings.json.jb-tmp .claude/settings.json
+    json_edit .claude/settings.json '.permissions.deny = ((.permissions.deny // []) + ["Artifact", "mcp__claude_ai_Claude_Docs", "Bash(gh gist create:*)"] | unique)' || true
 
     # owned
     local f
@@ -171,6 +681,12 @@ sync_into() {
         note "created $f"
       fi
     done
+    # Agents read the project's AGENTS.md (CLAUDE.md imports it): one line
+    # there reaches all of them, and the rest of the owner's file is left alone.
+    if [ -f AGENTS.md ] && ! grep -qF '.toolkit/RULES.md' AGENTS.md; then
+      printf '\n%s\n' "$RULES_POINTER" >> AGENTS.md
+      note "added the rules pointer to AGENTS.md"
+    fi
     if [ ! -e scripts/check ]; then
       mkdir -p scripts
       cp "$TEMPLATES/stacks/$STACK/scripts/check" scripts/check
@@ -251,8 +767,35 @@ cmd_check() {
   dir=$(cd "$dir" && pwd)
   cd "$dir"
   git rev-parse --git-dir >/dev/null 2>&1 || die "$dir is not a git repository"
-  bad()  { echo "  ✗ $*"; fails=$((fails + 1)); }
-  warn() { echo "  ! $*"; warns=$((warns + 1)); }
+  local exceptions="" line
+  if [ -f .jb-exceptions ]; then
+    while IFS= read -r line; do
+      case "$line" in ''|'#'*) continue ;; esac
+      line=$(printf '%s' "$line" | sed 's/[[:space:]]*$//')
+      if printf '%s' "$line" | grep -Eq '^R[0-9]+(\.[0-9]+)?:[[:space:]]*[^[:space:]]'; then
+        exceptions="$exceptions$line"$'\n'
+      else
+        echo "  ✗ .jb-exceptions: '$line' needs a reason, as 'R<id>: reason'"; fails=$((fails + 1))
+      fi
+    done < .jb-exceptions
+  fi
+  # The reason recorded for rule $1, if $1 or the section holding it is excepted.
+  excepted_reason() {
+    local id=$1 section=${1%%.*}
+    printf '%s' "$exceptions" | sed -n -e "s/^$id:[[:space:]]*//p" -e "s/^$section:[[:space:]]*//p" | sed -n 1p
+  }
+  # bad and warn take the rule a message cites, "(R3.2)", as its last word.
+  report() { # level message...
+    local level=$1; shift
+    local rule reason
+    rule=$(printf '%s' "$*" | sed -n 's/.*(\(R[0-9][0-9.]*\))$/\1/p')
+    reason=$([ -z "$rule" ] || excepted_reason "$rule")
+    if [ -n "$reason" ]; then echo "  ~ excepted $rule: $reason"
+    elif [ "$level" = bad ]; then echo "  ✗ $*"; fails=$((fails + 1))
+    else echo "  ! $*"; warns=$((warns + 1)); fi
+  }
+  bad()  { report bad "$@"; }
+  warn() { report warn "$@"; }
   ok()   { echo "  ✓ $*"; }
 
   echo "$dir"
@@ -261,12 +804,16 @@ cmd_check() {
   elif [ "$stamp" != "$TOOLKIT_VERSION" ]; then warn "synced at toolkit $stamp, toolkit is $TOOLKIT_VERSION: run jb sync"
   else ok "toolkit $stamp"; fi
 
-  [ "$(git config core.hooksPath || true)" = ".githooks" ] && ok "hooks enabled" || bad "hooks off: git config core.hooksPath .githooks (R3)"
+  local manager; manager=$(hook_manager)
+  if [ "$(git config core.hooksPath || true)" = ".githooks" ]; then ok "hooks enabled"
+  elif [ -n "$manager" ]; then ok "hooks managed by $manager"
+  else bad "hooks off: git config core.hooksPath .githooks (R3)"; fi
 
   local f
   for f in README.md AGENTS.md CLAUDE.md PRODUCT.md; do
     [ -f "$f" ] || bad "missing $f (R5)"
   done
+  grep -qsF '.toolkit/RULES.md' AGENTS.md || bad "AGENTS.md does not point to .toolkit/RULES.md: run jb sync (R5)"
   [ -x scripts/check ] && ok "scripts/check" || bad "missing executable scripts/check (R5)"
   grep -qs 'scripts/check' .github/workflows/ci.yml && ok "CI runs scripts/check" || bad "CI does not run scripts/check (R5)"
   grep -qs '.toolkit/version' .github/workflows/release.yml && ok "release checks tag vs version" || bad "release.yml does not check .toolkit/version (R4.3)"
@@ -277,7 +824,7 @@ cmd_check() {
   else bad "version: $v (R4.2)"; fi
 
   local tracked
-  tracked=$(git ls-files | grep -E '(^|/)\.(claude|cursor|codex|serena|engram|atl)/' | head -3 || true)
+  tracked=$(git ls-files | grep -E '(^|/)\.(claude|cursor|codex|serena|engram|atl)/' | sed -n 1,3p || true)
   [ -z "$tracked" ] && ok "no agent folders tracked" || bad "agent folders tracked: $(echo $tracked) (R3.4)"
   tracked=$(git ls-files | grep -E '(^|/)\.env(\..+)?$' | grep -v '\.env\.example$' || true)
   [ -z "$tracked" ] || bad "env files tracked: $(echo $tracked) (R6.5)"
@@ -285,7 +832,7 @@ cmd_check() {
     && ok "publishing tools denied" || bad "Artifact/Docs not denied in .claude/settings.json: run jb sync (R2)"
 
   if git rev-parse -q --verify HEAD >/dev/null; then
-    local n; n=$(git log --format=%B | grep -ciE '^co-authored-by:|generated with' || true)
+    local n; n=$(git log -n "${JB_HISTORY_LIMIT:-300}" --format=%B | grep -ciE '^co-authored-by:|generated with' || true)
     [ "$n" = 0 ] && ok "no agent attribution in history" || bad "$n attribution lines in history (R3.4)"
     local off
     off=$(git log -50 --no-merges --format=%s | grep -cvE '^(feat|fix|chore|docs|refactor|perf|test|ci|build|style|revert)(\([a-z0-9-]+\))?!?: ' || true)
@@ -300,7 +847,7 @@ cmd_check() {
     [ -f .github/workflows/image.yml ] && ok "image.yml publishes the image" || bad "service without .github/workflows/image.yml: run jb sync (R8.2)"
     local listens_to releases_as
     listens_to=$(sed -n 's/^    workflows: \[\(.*\)\]$/\1/p' .github/workflows/image.yml 2>/dev/null | tr -d '"'"'"' ')
-    releases_as=$(sed -n 's/^name: *//p' .github/workflows/release.yml 2>/dev/null | head -1 | tr -d '"'"'"' ')
+    releases_as=$(sed -n '/^name: */{s///p;q;}' .github/workflows/release.yml 2>/dev/null | tr -d '"'"'"' ')
     [ -z "$listens_to" ] || [ "$listens_to" = "$releases_as" ] \
       && ok "release.yml name matches image.yml" || bad "release.yml is named '$releases_as' but image.yml waits for '$listens_to': rename it back or run jb sync (R8.2)"
     if [ ! -f compose.yaml ]; then bad "service without compose.yaml at the root (R8.3)"
@@ -315,6 +862,43 @@ cmd_check() {
 }
 
 # ---------------------------------------------------------------- bump
+# The version key of the project's own table only (same rule as
+# .toolkit/version); a dependency's or a nested version is not ours.
+bump_toml() {
+  awk -v v="$2" -v tables="$3" '
+    BEGIN { n = split(tables, wanted, " ") }
+    /^\[/ { header = $0; sub(/[[:space:]]*(#.*)?$/, "", header); in_table = 0
+      for (i = 1; i <= n; i++) if (header == wanted[i]) in_table = 1 }
+    !done && in_table && /^version[[:space:]]*=[[:space:]]*"/ { sub(/"[^"]*"/, "\"" v "\""); done = 1 }
+    1' "$1" > "$1.jb-tmp"
+}
+bump_package_json() {
+  awk -v v="$2" '
+    { line = $0; plain = line; gsub(/"([^"\\]|\\.)*"/, "", plain) }
+    !done && depth == 1 && line ~ /^[[:space:]]*"version"[[:space:]]*:/ { sub(/:[[:space:]]*"[^"]*"/, ": \"" v "\"", line); done = 1 }
+    { print line; n = gsub(/\{/, "{", plain); m = gsub(/\}/, "}", plain); depth += n - m }' "$1" > "$1.jb-tmp"
+}
+
+# Undo a bump that failed half way: manifests back, nothing staged, no temp files.
+BUMP_CHANGED=()
+bump_rollback() {
+  local file
+  for file in ${BUMP_CHANGED[@]+"${BUMP_CHANGED[@]}"}; do
+    [ -e "$file.jb-orig" ] && mv "$file.jb-orig" "$file"
+    rm -f "$file.jb-tmp"
+    git reset -q -- "$file" 2>/dev/null || true
+  done
+  for file in Cargo.lock package-lock.json; do
+    [ -e "$file" ] || continue
+    git reset -q -- "$file" 2>/dev/null || true
+    git checkout -q -- "$file" 2>/dev/null || true
+  done
+  echo "jb: bump failed; manifests restored" >&2
+}
+
+# Stage a lockfile the bump rewrote, unless git ignores it.
+stage_unless_ignored() { git check-ignore -q "$1" || git add "$1"; }
+
 cmd_bump() {
   local new=${1-}
   printf '%s' "$new" | grep -Eq "$VERSION_RE" || die "usage: jb bump X.Y.Z[-alpha.N|-beta.N|-rc.N|-experimental.N]"
@@ -326,26 +910,31 @@ cmd_bump() {
 
   local old; old=$(.toolkit/version)
   local file ver
+  BUMP_CHANGED=()
+  trap bump_rollback EXIT
   while read -r file ver; do
+    BUMP_CHANGED+=("$file")
     case "$file" in
-      *Cargo.toml|*pyproject.toml)
-        awk -v v="$new" '!done && /^version[[:space:]]*=[[:space:]]*"/ { sub(/"[^"]*"/, "\"" v "\""); done=1 } 1' "$file" > "$file.jb-tmp" ;;
-      *package.json)
-        awk -v v="$new" '!done && /^[[:space:]]*"version"[[:space:]]*:/ { sub(/:[[:space:]]*"[^"]*"/, ": \"" v "\""); done=1 } 1' "$file" > "$file.jb-tmp" ;;
-      *VERSION)
-        echo "$new" > "$file.jb-tmp" ;;
+      *Cargo.toml) bump_toml "$file" "$new" "[package] [workspace.package]" ;;
+      *pyproject.toml) bump_toml "$file" "$new" "[project]" ;;
+      *package.json) bump_package_json "$file" "$new" ;;
+      *VERSION) echo "$new" > "$file.jb-tmp" ;;
     esac
+    cp "$file" "$file.jb-orig"
     mv "$file.jb-tmp" "$file"
-    git add "$file"
     note "$file $ver -> $new"
   done < <(.toolkit/version --files)
+  [ "$(.toolkit/version 2>/dev/null)" = "$new" ] || die "bump did not take (.toolkit/version says $(.toolkit/version 2>&1))"
+  for file in ${BUMP_CHANGED[@]+"${BUMP_CHANGED[@]}"}; do git add "$file"; done
 
   # Lockfiles that record the project's own version.
-  if [ -f Cargo.lock ]; then cargo update --workspace --offline -q 2>/dev/null || cargo metadata --format-version 1 >/dev/null; git add Cargo.lock; fi
-  if [ -f package-lock.json ]; then npm install --package-lock-only --ignore-scripts -s; git add package-lock.json; fi
+  if [ -f Cargo.lock ]; then cargo update --workspace --offline -q 2>/dev/null || cargo metadata --format-version 1 >/dev/null; stage_unless_ignored Cargo.lock; fi
+  if [ -f package-lock.json ]; then npm install --package-lock-only --ignore-scripts -s; stage_unless_ignored package-lock.json; fi
 
   [ "$(.toolkit/version)" = "$new" ] || die "bump did not take: .toolkit/version still says $(.toolkit/version)"
   git commit -q -m "chore: bump version to $new"
+  for file in ${BUMP_CHANGED[@]+"${BUMP_CHANGED[@]}"}; do rm -f "$file.jb-orig"; done
+  trap - EXIT
   echo "committed chore: bump version to $new (was $old). Open the pull request; after it merges, run jb tag on main."
 }
 
@@ -369,12 +958,24 @@ cmd_tag() {
 # Run by the SessionStart hook. Whatever it prints becomes the agent's
 # context, so it prints only what needs acting on, and never fails a session.
 cmd_session() {
-  local root
+  local root name text
   root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
-  local name; name=$(basename "$root")
+  name=$(basename "$root")
+  text=$({ report_session "$root" "$name"; report_unpushed "$root"; report_missing_kit; })
+  [ -n "$text" ] || return 0
+  case "$(agent_flag "$@")" in
+    gemini-cli) jq -n --arg t "$text" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $t}}' ;;
+    github-copilot) jq -n --arg t "$text" '{additionalContext: $t}' ;;
+    *) printf '%s\n' "$text" ;;
+  esac
+}
+
+report_session() {
+  local root=$1 name=$2 physical projects
   if [ ! -d "$root/.toolkit" ]; then
-    case "$root/" in
-      "$PROJECTS"/*)
+    physical=$(cd "$root" && pwd -P); projects=$(cd "$PROJECTS" 2>/dev/null && pwd -P || echo "$PROJECTS")
+    case "$physical/" in
+      "$projects"/*)
         echo "jb-toolkit: '$name' is not on the standard yet (no .toolkit/). Before other work, offer the owner to adopt it (RULES.md R0.3)." ;;
     esac
     return 0
@@ -389,6 +990,180 @@ cmd_session() {
   printf '%s\n' "$problems"
 }
 
+# One line, only when work exists nowhere but this machine.
+report_unpushed() {
+  local root=$1 parts=() commits stashes
+  git -C "$root" rev-parse -q --verify HEAD >/dev/null || return 0
+  if [ -z "$(git -C "$root" remote)" ]; then
+    parts+=("no remote")
+  else
+    commits=$(git -C "$root" rev-list --count --branches --not --remotes)
+    [ "$commits" = 0 ] || parts+=("$commits commit$([ "$commits" = 1 ] || echo s) on no remote")
+  fi
+  stashes=$(git -C "$root" stash list | wc -l | tr -d ' ')
+  [ "$stashes" = 0 ] || parts+=("$stashes stash$([ "$stashes" = 1 ] || echo es)")
+  [ ${#parts[@]} = 0 ] || echo "jb-toolkit: only on this machine: $(IFS=,; echo "${parts[*]}" | sed 's/,/, /g')."
+}
+
+# The value after --agent in "$@": hook commands are registered with it so one
+# command can speak each agent's input and output shape.
+agent_flag() {
+  while [ $# -gt 0 ]; do
+    [ "$1" = --agent ] && { echo "${2-}"; return 0; }
+    shift
+  done
+}
+
+# ---------------------------------------------------------------- guard
+# PreToolUse hook: refuses commands that switch git hooks off (R0.7). Exit 2
+# with the reason on stderr blocks the call in every agent that has hooks.
+# Plain `git push` passes: a hook cannot know whether the owner asked (R1.1).
+cmd_guard() {
+  local input command cwd stripped
+  input=$(cat)
+  # Claude Code, Codex and Gemini: tool_input.command; Cursor: command;
+  # Copilot: toolArgs, a JSON string.
+  command=$(printf '%s' "$input" | jq -r '.tool_input.command // .command // (.toolArgs | if type == "string" then (try fromjson catch {}) else . end | .command?) // empty' 2>/dev/null) || return 0
+  cwd=$(printf '%s' "$input" | jq -r '.cwd // .workspace_roots[0]? // empty' 2>/dev/null || true)
+  # Data is not a command: heredoc bodies go first, quoted text becomes a
+  # placeholder word Q (a commit message may mention --no-verify, but a value
+  # flag must still consume its value, not the next flag), then lines become
+  # ";" separators, then redirections.
+  stripped=$(printf '%s\n' "$command" | awk -v sq="'" '
+    heredoc != "" { line = $0; if (dash) sub(/^\t+/, "", line); if (line == heredoc) heredoc = ""; next }
+    { print }
+    match($0, "<<-?[ ]*[\"" sq "]?[A-Za-z_][A-Za-z0-9_]*[\"" sq "]?") {
+      before = substr($0, 1, RSTART - 1)
+      if (before ~ /<$/ || before ~ /\(\([^)]*$/) next
+      tag = substr($0, RSTART, RLENGTH); dash = (tag ~ /^<<-/)
+      gsub("^<<-?[ ]*[\"" sq "]?|[\"" sq "]$", "", tag); heredoc = tag
+    }' | tr '\n' ';' | sed -E "s/\"[^\"]*\"/Q/g; s/'[^']*'/Q/g; s/[0-9]*>>?&?[^[:space:];&|]*//g")
+  local git_re='(^|[^[:alnum:]_-])git([[:space:]]|$)'
+  [[ $stripped =~ $git_re ]] || return 0
+  block() { echo "jb guard: $1 (R0.7). Fix what the hook refuses instead." >&2; exit 2; }
+
+  local nv_re='[[:space:]]--no-verify'
+  [[ $stripped =~ $nv_re ]] && block "--no-verify skips the git hooks"
+  guard_commit_flags "$stripped" && block "git commit -n skips the git hooks"
+  local env_re='(^|[[:space:];&|])(HUSKY=0|LEFTHOOK=0|SKIP=[^[:space:]]+)'
+  [[ $stripped =~ $env_re ]] && block "${BASH_REMATCH[2]} switches the hook manager off"
+  local hooks_re='core\.hooksPath'
+  if [[ $stripped =~ $hooks_re ]]; then
+    local override_re='-c[[:space:]]*core\.hooksPath' unset_re='--unset(-all)?[[:space:]]+core\.hooksPath'
+    local value_re='core\.hooksPath(=|[[:space:]]+)([^[:space:];&|]+)' read_re='--get|--list|--show-origin'
+    [[ $stripped =~ $override_re ]] && block "-c core.hooksPath redirects the git hooks"
+    [[ $stripped =~ $unset_re ]] && block "unsetting core.hooksPath turns the git hooks off"
+    if [[ $stripped =~ $value_re ]]; then
+      local value=${BASH_REMATCH[2]}
+      [[ $stripped =~ $read_re ]] || guard_hooks_path_ok "$value" "${cwd:-.}" || block "core.hooksPath may only point at .githooks or the project's own hook manager"
+    fi
+  fi
+  return 0
+}
+
+# True when a "git ... commit ..." segment of $1 carries -n (alone or in a
+# short-flag cluster). Only the commit subcommand: -n means something else
+# elsewhere (git log -n 5).
+guard_commit_flags() {
+  local segment word subcommand seen skip i rest char
+  while IFS= read -r segment; do
+    subcommand=""; seen=""; skip=""
+    for word in $segment; do
+      if [ -z "$seen" ]; then [ "$word" = git ] && seen=git; continue; fi
+      if [ -n "$skip" ]; then skip=""; continue; fi
+      if [ -z "$subcommand" ]; then
+        case "$word" in
+          -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env) skip=1 ;;
+          -*) ;;
+          *) subcommand=$word ;;
+        esac
+        continue
+      fi
+      [ "$subcommand" = commit ] || break
+      case "$word" in --*) continue ;; -*) ;; *) continue ;; esac
+      # A short-flag cluster: reading stops at a flag that takes a value
+      # (-m, -F, -c, -C, -t, -u), the rest of the word being that value.
+      rest=${word#-}
+      for ((i = 0; i < ${#rest}; i++)); do
+        char=${rest:i:1}
+        case "$char" in
+          n) return 0 ;;
+          m|F|c|C|t) [ $((i + 1)) -ge ${#rest} ] && skip=1; break ;;
+          u) break ;;
+        esac
+      done
+    done
+  done < <(printf '%s' "$1" | tr ';&|' '\n\n\n')
+  return 1
+}
+
+# A hooksPath is fine when it is the toolkit's or the project's own hook manager.
+guard_hooks_path_ok() {
+  local value=$1 dir=$2
+  case "$value" in
+    .githooks) return 0 ;;
+    .husky|.husky/_) [ -d "$dir/.husky" ] ;;
+    .git/hooks) [ -f "$dir/lefthook.yml" ] || [ -f "$dir/.lefthook.yml" ] || [ -f "$dir/.pre-commit-config.yaml" ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# ---------------------------------------------------------------- stop
+# Stop hook: before the agent ends its turn in a toolkit project with
+# uncommitted changes, run scripts/check; a failure sends the agent back to
+# work (R0.6). stop_hook_active is true on the turn a Stop hook already
+# continued, which is what keeps this from looping.
+# Kill $1 and everything under it (a sleeping child would keep the caller's pipe open).
+kill_tree() {
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$child"; done
+  kill "$1" 2>/dev/null || true
+}
+
+# Runs a command for at most $1 seconds (124 when cut off, like timeout(1),
+# which stock macOS lacks).
+run_bounded() {
+  local secs=$1 pid watcher status=0 flag; shift
+  flag=$(mktemp)
+  "$@" & pid=$!
+  # The watcher must not hold the caller's stdout (a $(...) would wait for it)
+  # and polls in one-second steps so killing it leaves no long sleep behind.
+  ( i=0; while [ "$i" -lt "$secs" ]; do sleep 1; i=$((i + 1)); done; echo cut > "$flag"; kill_tree "$pid" ) >/dev/null 2>&1 & watcher=$!
+  wait "$pid" || status=$?
+  kill "$watcher" 2>/dev/null || true; wait "$watcher" 2>/dev/null || true
+  [ ! -s "$flag" ] || status=124
+  rm -f "$flag"
+  return "$status"
+}
+
+cmd_stop() {
+  local agent input cwd root
+  agent=$(agent_flag "$@")
+  input=$(cat)
+  # Cursor has no stop_hook_active: loop_count is above 0 once it continued.
+  [ "$(printf '%s' "$input" | jq -r '(.stop_hook_active // false) or ((.loop_count // 0) > 0)')" = true ] && return 0
+  cwd=$(printf '%s' "$input" | jq -r '.cwd // .workspace_roots[0]? // empty')
+  root=$(git -C "${cwd:-.}" rev-parse --show-toplevel 2>/dev/null) || return 0
+  [ -d "$root/.toolkit" ] && [ -x "$root/scripts/check" ] || return 0
+  [ -n "$(git -C "$root" status --porcelain)" ] || return 0
+
+  local out status=0 marker seen
+  out=$(cd "$root" && run_bounded "${JB_STOP_TIMEOUT:-150}" scripts/check 2>&1) || status=$?
+  # 124 is timeout(1) giving up: slow is not failing.
+  marker=$(git -C "$root" rev-parse --git-path jb-stop-seen)
+  case "$marker" in /*) ;; *) marker="$root/$marker" ;; esac
+  if [ "$status" = 0 ] || [ "$status" = 124 ]; then rm -f "$marker"; return 0; fi
+  # The same failure blocks once, whatever the agent says about loops.
+  seen=$(printf '%s' "$out" | tail -n 30 | cksum | cut -d' ' -f1)
+  [ "$(cat "$marker" 2>/dev/null)" != "$seen" ] || return 0
+  printf '%s\n' "$seen" > "$marker"
+  jq -n --arg agent "$agent" --arg tail "$(printf '%s\n' "$out" | tail -n 30)" '
+    ("scripts/check fails; fix it before finishing (R0.6):\n" + $tail) as $reason
+    | if $agent == "cursor" then {followup_message: $reason}
+      elif $agent == "gemini-cli" then {decision: "deny", reason: $reason}
+      else {decision: "block", reason: $reason} end'
+}
+
 # ---------------------------------------------------------------- main
 cmd=${1-help}; shift || true
 case "$cmd" in
@@ -399,6 +1174,8 @@ case "$cmd" in
   bump)    cmd_bump "$@" ;;
   tag)     cmd_tag "$@" ;;
   session) cmd_session "$@" || true ;;
+  guard)   cmd_guard "$@" ;;
+  stop)    cmd_stop "$@" || true ;;
   rules)   echo "$TOOLKIT/RULES.md" ;;
   version|--version) echo "$TOOLKIT_VERSION" ;;
   help|-h|--help) usage ;;

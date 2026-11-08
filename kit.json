@@ -1,0 +1,200 @@
+{
+  "skillsCli": "skills@1.7.6",
+  "agents": [
+    {
+      "id": "claude-code",
+      "skills": "claude-code",
+      "gentleAi": "claude-code",
+      "impeccable": "claude"
+    },
+    {
+      "id": "codex",
+      "skills": "codex",
+      "gentleAi": "codex",
+      "impeccable": "codex"
+    },
+    {
+      "id": "cursor",
+      "skills": "cursor",
+      "gentleAi": "cursor",
+      "impeccable": "cursor"
+    },
+    {
+      "id": "gemini-cli",
+      "skills": "gemini-cli",
+      "gentleAi": "gemini-cli",
+      "impeccable": "gemini"
+    },
+    {
+      "id": "github-copilot",
+      "skills": "github-copilot",
+      "gentleAi": "github-copilot-cli",
+      "impeccable": "copilot"
+    },
+    {
+      "id": "opencode",
+      "skills": "opencode",
+      "gentleAi": "opencode",
+      "impeccable": "opencode",
+      "gentleAiNeeds": "opencode"
+    }
+  ],
+  "items": [
+    {
+      "kind": "plugin",
+      "name": "ponytail@ponytail",
+      "source": "DietrichGebert/ponytail",
+      "agent": "claude-code"
+    },
+    {
+      "kind": "plugin",
+      "name": "superpowers@claude-plugins-official",
+      "source": "anthropics/claude-plugins-official",
+      "agent": "claude-code"
+    },
+    {
+      "kind": "plugin",
+      "name": "engram@engram",
+      "source": "Gentleman-Programming/engram",
+      "agent": "claude-code"
+    },
+    {
+      "kind": "skills",
+      "source": "https://github.com/emilkowalski/skills.git",
+      "ref": "c8a79627b59d72d764d6ab6f2c87c09a48169833",
+      "names": [
+        "emil-design-eng",
+        "animate",
+        "review-animations",
+        "improve-animations",
+        "find-animation-opportunities",
+        "remove-animations",
+        "choreograph",
+        "animation-performance",
+        "animation-vocabulary",
+        "break-ui",
+        "pick-ui-library",
+        "prototype"
+      ]
+    },
+    {
+      "kind": "skills",
+      "source": "https://github.com/jakubkrehel/make-interfaces-feel-better.git",
+      "ref": "35545ea1512ad59fa463e6b1f95ca9c052981fe6",
+      "names": [
+        "make-interfaces-feel-better"
+      ]
+    },
+    {
+      "kind": "skills",
+      "source": "https://github.com/ibelick/ui-skills.git",
+      "ref": "97dea9e747ea94d5671ef1468cbb8f9bd5f32542",
+      "names": [
+        "baseline-ui",
+        "fixing-accessibility",
+        "fixing-metadata"
+      ]
+    },
+    {
+      "kind": "skills",
+      "source": "https://github.com/benjitaylor/skills.git",
+      "ref": "299140fafd08df55a9c234e610c3f64af3f45531",
+      "names": [
+        "stageshow"
+      ]
+    },
+    {
+      "kind": "command",
+      "name": "impeccable",
+      "present": "[ -f \"$HOME/.claude/skills/impeccable/SKILL.md\" ]",
+      "install": "cd \"$HOME\" && npx --yes impeccable@4.8.0 install --yes --user --providers={agents:impeccable} </dev/null"
+    },
+    {
+      "kind": "skills",
+      "source": "https://github.com/PatternsDev/skills.git",
+      "ref": "48bf58a488cd210bcfad280b09c3a00403964d9d",
+      "names": [
+        "ai-ui-patterns",
+        "client-side-rendering",
+        "compound-pattern",
+        "hoc-pattern",
+        "hooks-pattern",
+        "incremental-static-rendering",
+        "presentational-container-pattern",
+        "progressive-hydration",
+        "react-2026",
+        "react-composition-2026",
+        "react-data-fetching",
+        "react-render-optimization",
+        "react-selective-hydration",
+        "react-server-components",
+        "render-props-pattern",
+        "server-side-rendering",
+        "static-rendering",
+        "streaming-ssr"
+      ]
+    },
+    {
+      "kind": "release",
+      "name": "rtk",
+      "repo": "rtk-ai/rtk",
+      "version": "0.45.0",
+      "after": "rtk init -g --auto-patch",
+      "assets": {
+        "darwin-arm64": {
+          "file": "rtk-aarch64-apple-darwin.tar.gz",
+          "sha256": "064151cfc2d50b24d810b06a0af2e41b9c945e83534e4c438c3d3eae607fc3f4"
+        },
+        "darwin-x86_64": {
+          "file": "rtk-x86_64-apple-darwin.tar.gz",
+          "sha256": "9ea02f889d5a2779e4fb700df4587824303c5a57cda22e903e30058079fca0ef"
+        },
+        "linux-aarch64": {
+          "file": "rtk-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "80a746dd305ef944ff50ef011ae4ce3878dd5ba88dfe35d859d05498191637c3"
+        },
+        "linux-x86_64": {
+          "file": "rtk-x86_64-unknown-linux-musl.tar.gz",
+          "sha256": "c4c036fbf181fc55ef329786c8c17e0d427972b053b825944d968a6aafef1ba4"
+        }
+      }
+    },
+    {
+      "kind": "release",
+      "name": "gentle-ai",
+      "repo": "Gentleman-Programming/gentle-ai",
+      "version": "4.4.0",
+      "assets": {
+        "darwin-arm64": {
+          "file": "gentle-ai_4.4.0_darwin_arm64.tar.gz",
+          "sha256": "b6e00957eb81115f18e33197ae2035f75812a624c6d53e72826ecf7b4a635539"
+        },
+        "darwin-x86_64": {
+          "file": "gentle-ai_4.4.0_darwin_amd64.tar.gz",
+          "sha256": "95686ea30615516aa29ebb6257227b1cdd4c67649dff63ec7adb576ca26a678d"
+        },
+        "linux-aarch64": {
+          "file": "gentle-ai_4.4.0_linux_arm64.tar.gz",
+          "sha256": "2d8874464cbe54b66a77d7c9fe66ce577933de00936ed1a035c81de6406a95fc"
+        },
+        "linux-x86_64": {
+          "file": "gentle-ai_4.4.0_linux_amd64.tar.gz",
+          "sha256": "1f72ca13b32e87cb7f65b29e7fae6df4490b53d69d4763cdf23e944165880cd6"
+        }
+      }
+    },
+    {
+      "kind": "command",
+      "name": "gentle-ai config",
+      "writesRules": true,
+      "present": "gentle_ai_configured",
+      "install": "gentle-ai install --agent {agents:gentleAi} --component persona,engram,skills --persona gentleman --skill go-testing,gentle-ai-bench,skill-creator,skill-improver,judgment-day,skill-registry,chained-pr,cognitive-doc-design,comment-writer,work-unit-commits,rdd-defect-workflow,systemic-issue-triage"
+    },
+    {
+      "kind": "command",
+      "name": "gentle-ai telemetry off",
+      "present": "! command -v gentle-ai >/dev/null || [ \"$(gentle-ai telemetry status --json 2>/dev/null | jq -r .enabled)\" = false ]",
+      "install": "gentle-ai telemetry disable"
+    }
+  ]
+}

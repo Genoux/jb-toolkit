@@ -2,10 +2,17 @@
 
 The standard every project follows, whatever its stack. Agents read this file
 through the global `~/.claude/CLAUDE.md` import (`jb install`), so a project
-never has to restate it. A project's own `AGENTS.md` may add rules or record a
-deliberate exception (with the reason); it never silently contradicts these.
+never has to restate it. A project's own `AGENTS.md` may add rules; a deliberate
+exception is one line `R<id>: reason` in the project's `.jb-exceptions`
+(`R3` covers `R3.2`), which `jb check` reports instead of failing. An
+exception without a reason is itself a problem.
 
 Rules are numbered so a review or a commit can cite them (`R4.2`).
+
+Enforcement lives in git hooks, `scripts/check` and CI, which work with any
+agent. Agent hooks (`jb guard`, `jb stop`, `jb session`) are optional
+adapters; every agent reaches these rules through the project's `AGENTS.md`,
+which points to `.toolkit/RULES.md`.
 
 ## R0. The agent runs the toolkit
 
@@ -20,18 +27,15 @@ the owner to run `jb` or any procedure below: run it yourself and report.
    of the session, on a branch: `jb sync` re-applies managed files; the rest
    (`scripts/check`, docs, workflows) you edit by hand. Run `jb check` again
    to confirm, and tell the owner in one line what changed.
-3. **Project not on the standard yet.** Offer once to adopt it. On yes:
-   `git switch -c chore/adopt-jb-toolkit`, `jb sync`, make `scripts/check`
-   run what the project's CI already runs, make the existing workflows call
-   `scripts/check` and `.toolkit/version`, `jb check` until clean, commit.
-   Rewrite nothing the project already does well; record deliberate
-   exceptions in its `AGENTS.md`.
+3. **Project not on the standard yet.** Offer once to adopt it. On yes,
+   follow the `jb-adopt` skill.
 4. **Release.** When the owner asks to release or ship, follow the
    `jb-release` skill.
 5. **Showing something.** Follow the `jb-demo` skill (R2).
 6. **Before saying work is done.** Run `scripts/check` and report its result.
 7. **Commits** go through the hooks; never bypass them (`--no-verify`). If a
-   hook refuses, fix the cause.
+   hook refuses, fix the cause. The agent hooks `jb guard` and `jb stop`
+   enforce this and R0.6.
 
 ## R1. Working with the owner
 
@@ -44,6 +48,9 @@ the owner to run `jb` or any procedure below: run it yourself and report.
    hard to reverse), ask. Otherwise pick the sensible default, say which, and go.
 4. Report what was actually run and what it showed. A check that was skipped
    is reported as skipped.
+5. The `branch-pr` and `issue-creation` skills (Gentle AI's own contribution
+   rules: an approved issue, type labels) do not apply in the owner's
+   projects; R3 governs branches, commits and pull requests.
 
 ## R2. Demos, previews, prototypes: local only
 
@@ -65,7 +72,8 @@ the owner to run `jb` or any procedure below: run it yourself and report.
 ## R3. Git
 
 1. `main` is always releasable and only moves through pull requests.
-   `.githooks/pre-commit` refuses a commit on `main` (the first commit of a new
+   `.githooks/pre-commit` (or the project's hook manager, which `jb sync`
+   leaves in charge) refuses a commit on `main` (the first commit of a new
    repo excepted).
 2. Branches: `<type>/<short-kebab-slug>`, type one of `feat fix chore docs
    refactor perf test ci build release experiment`. Example:
@@ -121,7 +129,8 @@ Every project has:
 | `scripts/build` | Optional. Produces release files in `dist/`. |
 | `compose.yaml` | Services only: the deploy file (R8). |
 | `.toolkit/` | Managed by `jb sync`. Do not edit. |
-| `.githooks/` | Managed by `jb sync`. Do not edit. |
+| `.githooks/` | Managed by `jb sync`; unused when the project has its own hook manager. Do not edit. |
+| `.jb-exceptions` | Optional. Deliberate departures from these rules, `R<id>: reason` per line. |
 | `.demo/` | Throwaway demos (R2). Gitignored. |
 
 Optional, when the project has them: `DESIGN.md` (UI system),
@@ -151,8 +160,9 @@ Optional, when the project has them: `DESIGN.md` (UI system),
 2. Merge settings: rebase only, delete branch on merge (`jb new --github`
    sets these; for an existing repo, `gh repo edit --enable-rebase-merge
    --enable-squash-merge=false --enable-merge-commit=false --delete-branch-on-merge`).
-3. Shared design work (e.g. the Signal design system in `../signal`) is used
-   when the owner asks for it; a project never copies and edits it locally.
+3. Shared work owned by another of the owner's projects (a design system, a
+   library) is used as a dependency when the owner asks for it; a project
+   never copies and edits it locally.
 
 ## R8. Services
 

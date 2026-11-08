@@ -11,13 +11,18 @@ commit only when asked). Stack and UI stay free per project.
 ```
 
 After that, you pitch and decide; agents scaffold, adopt, fix drift, release
-and demo by themselves. Install wires four things into Claude Code:
+and demo by themselves. Install wires these into every agent in `kit.json` › `agents` that is installed
+(Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot CLI, opencode: what each
+really supports is in the table in `AGENTS.md`). For Claude Code that is:
 
 | What | Where | Effect |
 |---|---|---|
 | `RULES.md` | imported from `~/.claude/CLAUDE.md` | every session, in any folder, knows the standard (R0 tells the agent it runs the toolkit) |
 | Session hook | `SessionStart` in `~/.claude/settings.json` | in a project, runs `jb session`: silent when the project is clean; otherwise lists what to fix, or says the project is not adopted yet |
-| Skills | `~/.claude/skills/jb-*` | `jb-new-project` (you pitch → it scaffolds), `jb-release` (you say "release" → bump, PR, tag, draft), `jb-demo` (anything to show → local `.demo/*.html`) |
+| Guard hook | `PreToolUse` (Bash) | `jb guard` refuses `--no-verify`, `commit -n`, `core.hooksPath` changes and `HUSKY=0`/`LEFTHOOK=0`/`SKIP=` on git commands |
+| Stop hook | `Stop` | `jb stop` runs `scripts/check` when the tree has changes and sends the agent back to work if it fails; honors `stop_hook_active`, silent otherwise |
+| Skills | `~/.claude/skills/jb-*` | `jb-new-project` (you pitch → it scaffolds), `jb-adopt` (existing repo → standard, in a worktree), `jb-release` (you say "release" → bump, PR, tag, draft), `jb-demo` (anything to show → local `.demo/*.html`) |
+| Baseline kit | `kit.json` | plugins, skills (pinned to a commit) and tools every machine should have; `jb install` adds what is missing, `jb session` names what is |
 | `jb` | `~/.local/bin/jb` | the agent's tool: `new`, `sync`, `check`, `bump`, `tag` |
 
 Then, in every toolkit project, git hooks refuse off-standard commits and
@@ -26,7 +31,8 @@ tools. The rules are enforced, not only written down.
 
 Re-run `jb install` after moving the toolkit; it is idempotent and backs up
 `settings.json` to `settings.json.jb-backup`. Codex gets a pointer to
-`RULES.md` in `~/.codex/AGENTS.md` (no hooks or skills there).
+`RULES.md` in `~/.codex/AGENTS.md` and the same three hooks in
+`~/.codex/hooks.json`; Codex runs them only after you trust them in `/hooks`.
 
 ## Why a scaffold that syncs, not a package
 
@@ -84,8 +90,12 @@ for workflows on the default branch, so this starts working once `image.yml` is 
 | `.github/workflows/image.yml`: services only, builds and publishes the image on a tag | |
 | `.editorconfig`, PR template, the `jb-toolkit` block in `.gitignore` | `VERSION` (only when there is no manifest) |
 
-`core.hooksPath` is set to `.githooks` by `jb new`/`jb sync`. Each clone
-needs it once: `jb sync` or `git config core.hooksPath .githooks`.
+`core.hooksPath` is set to `.githooks` by `jb new`/`jb sync`, unless the
+project already uses a hook manager (lefthook, husky, pre-commit or its own
+`core.hooksPath`); then `jb sync` leaves it alone and `jb check` reports
+"hooks managed by <manager>". Each clone needs it once: `jb sync` or
+`git config core.hooksPath .githooks`. Deliberate departures from the rules
+go in `.jb-exceptions`, one `R<id>: reason` per line.
 
 ## Adopting an existing project
 

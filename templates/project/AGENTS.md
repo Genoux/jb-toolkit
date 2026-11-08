@@ -5,6 +5,9 @@ debugged, and the mistake each decision guards against. The shared rules
 (git, commits, releases, local-only demos) are in jb-toolkit's `RULES.md` and
 are not repeated here; anything below that departs from them says why.
 
+Every agent follows the shared rules in `.toolkit/RULES.md` (managed by
+jb-toolkit); deliberate exceptions are in `.jb-exceptions`.
+
 Read `PRODUCT.md` first.
 
 ## Stack
