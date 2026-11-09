@@ -33,6 +33,50 @@ git commit -q -m "feat: add a"
 git switch -q -c release/v0.2.0 && "$root/bin/jb" bump 0.2.0 >/dev/null
 [ "$(.toolkit/version)" = 0.2.0 ] || { echo "bump failed" >&2; exit 1; }
 
+[ ! -e .github/workflows/image.yml ] || { echo "a non-service got image.yml" >&2; exit 1; }
+
+# a non-service loses a stale image.yml, and only that file
+mkdir -p .github/workflows && echo stale > .github/workflows/image.yml
+"$root/bin/jb" sync >/dev/null
+[ ! -e .github/workflows/image.yml ] || { echo "sync kept a stale image.yml" >&2; exit 1; }
+[ -f .github/workflows/ci.yml ] || { echo "sync removed more than image.yml" >&2; exit 1; }
+
+# a service: Dockerfile one folder down, image-only compose.yaml
+JB_PROJECTS=$tmp "$root/bin/jb" new svc --stack none >/dev/null
+cd "$tmp/svc"
+mkdir server && echo "FROM scratch" > server/Dockerfile
+compose() { # volume lines (verbatim, 6-space indented items) -> compose.yaml
+  printf 'services:\n  app:\n    image: ghcr.io/x/svc-server:latest\n    command:\n      - ./run.sh\n    entrypoint: ["./run.sh"]\n%s\nvolumes:\n  data: {}\n' "$1" > compose.yaml
+}
+compose $'    volumes:\n      - data:/data'
+"$root/bin/jb" sync >/dev/null
+[ -f .github/workflows/image.yml ] || { echo "service did not get image.yml" >&2; exit 1; }
+"$root/bin/jb" check >/dev/null || { "$root/bin/jb" check; exit 1; }
+fails() { # expected message, then the command that breaks the project
+  local expected=$1 out; shift
+  "$@"
+  if out=$("$root/bin/jb" check 2>&1); then echo "jb check accepted: $expected" >&2; exit 1; fi
+  case $out in *"$expected"*) ;; *) echo "jb check failed without '$expected':" >&2; echo "$out" >&2; exit 1 ;; esac
+  compose $'    volumes:\n      - data:/data'
+}
+printf 'services:\n  app:\n    build: ./server\n' > compose.yaml
+fails "has build:" true
+tilde='~'
+for mount in './data:/data' '../data:/data' '.:/app' '/DATA/x:/x' "$tilde/x:/x" '"./data:/data"'; do
+  fails "host bind mount" compose $'    volumes:\n      - '"$mount"
+done
+fails "host bind mount" compose $'    volumes:\n      - type: bind\n        source: ./data\n        target: /data'
+fails "host bind mount" compose $'    volumes:\n      - type: volume\n        source: /DATA/x\n        target: /x'
+fails "without compose.yaml" rm compose.yaml
+fails "image.yml" rm .github/workflows/image.yml
+"$root/bin/jb" sync >/dev/null
+mv .github/workflows/release.yml .github/workflows/release.keep
+sed 's/^name: Release$/name: Ship/' .github/workflows/release.keep > .github/workflows/release.yml
+fails "release.yml" true
+mv .github/workflows/release.keep .github/workflows/release.yml
+"$root/bin/jb" check >/dev/null || { "$root/bin/jb" check; exit 1; }
+cd "$tmp/smoke"
+
 # install into a fake HOME whose CLAUDE.md is a dotfiles symlink: running it
 # twice must keep the link, the existing rules and exactly one block.
 home=$tmp/home && mkdir -p "$home/.claude" "$tmp/dotfiles"

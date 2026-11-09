@@ -62,6 +62,17 @@ starting `scripts/check` and a few `.gitignore` lines:
 | `static` | every local `href`/`src` in the HTML resolves |
 | `none` | a placeholder until a stack is chosen |
 
+### Services
+
+A repo with a `Dockerfile` at the root or one folder down is a service (R8).
+`jb sync` adds the managed `.github/workflows/image.yml`, and `jb check`
+requires an image-only `compose.yaml` at the root (no `build:`, no host bind
+mounts). Deploy flow: tag a release, CI publishes `ghcr.io/<owner>/<repo>[-<folder>]`,
+paste `compose.yaml` into Portainer or a ZimaOS custom app, set the env vars,
+and once per new package make it public in the GitHub package settings. The image is
+published only after the release workflow passed for the tag. GitHub fires `workflow_run` only
+for workflows on the default branch, so this starts working once `image.yml` is merged.
+
 ## What a project gets
 
 | Managed (overwritten by `jb sync`) | Owned (created once, then the project's) |
@@ -70,6 +81,7 @@ starting `scripts/check` and a few `.gitignore` lines:
 | `.githooks/commit-msg`: Conventional Commits, 72 chars, no attribution | `scripts/check`: the one health command |
 | `.githooks/pre-push`: branch names, no pushes to main | `.github/workflows/ci.yml`: runs `scripts/check` |
 | `.toolkit/version`: reads and cross-checks manifest versions | `.github/workflows/release.yml`: tag vs version, check, build, draft release |
+| `.github/workflows/image.yml`: services only, builds and publishes the image on a tag | |
 | `.editorconfig`, PR template, the `jb-toolkit` block in `.gitignore` | `VERSION` (only when there is no manifest) |
 
 `core.hooksPath` is set to `.githooks` by `jb new`/`jb sync`. Each clone

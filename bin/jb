@@ -57,6 +57,25 @@ detect_stack() {
   fi
 }
 
+is_service() { # a Dockerfile at the root or one folder down (R8)
+  [ -n "$(find "$1" -maxdepth 2 -name Dockerfile -not -path '*/node_modules/*' -not -path '*/target/*' -not -path '*/.git/*' -print -quit)" ]
+}
+
+# Inside a service's volumes: block, flags a short item whose source is a host
+# path (/ ~ .) or a long item that is type: bind or has such a source.
+# command:/entrypoint: lists and top-level named volumes are never inspected.
+has_host_bind_mount() {
+  awk '
+    /^[[:space:]]*(#|$)/ { next }
+    { match($0, /^ */); indent = RLENGTH }
+    inside && (indent < depth || (indent == depth && $0 !~ /^ *-/)) { inside = 0 }
+    !inside && indent > 0 && /^ *volumes:[[:space:]]*$/ { inside = 1; depth = indent; next }
+    inside && /^ *- *["'"'"']?[\/~.][^:]*:/ { found = 1 }
+    inside && /^[ -]*type: *["'"'"']?bind/ { found = 1 }
+    inside && /^[ -]*source: *["'"'"']?[\/~.]/ { found = 1 }
+    END { exit !found }' "$1"
+}
+
 render() { # template -> dest, filling {{NAME}} {{STACK}}
   sed -e "s/{{NAME}}/$NAME/g" -e "s/{{STACK}}/$STACK/g" "$1" > "$2"
 }
@@ -122,6 +141,12 @@ sync_into() {
     cp "$TEMPLATES/managed/.editorconfig" .
     mkdir -p .github
     cp "$TEMPLATES/managed/.github/pull_request_template.md" .github/
+    if is_service .; then
+      mkdir -p .github/workflows
+      cp "$TEMPLATES/managed/.github/workflows/image.yml" .github/workflows/
+    else
+      rm -f .github/workflows/image.yml
+    fi
     chmod +x .githooks/* .toolkit/version
     echo "$TOOLKIT_VERSION" > .toolkit/toolkit-version
     { cat "$TEMPLATES/managed/gitignore-block"; } | put_block .gitignore "# >>> jb-toolkit (managed by jb sync; add your own lines outside this block)" "# <<< jb-toolkit"
@@ -269,6 +294,20 @@ cmd_check() {
     branches=$(git for-each-ref --format='%(refname:short)' refs/heads \
       | grep -vE '^(main|(feat|fix|chore|docs|refactor|perf|test|ci|build|release|experiment)/[a-z0-9][a-z0-9._-]*)$' || true)
     [ -z "$branches" ] || warn "branches off-pattern: $(echo $branches) (R3.2)"
+  fi
+
+  if is_service .; then
+    [ -f .github/workflows/image.yml ] && ok "image.yml publishes the image" || bad "service without .github/workflows/image.yml: run jb sync (R8.2)"
+    local listens_to releases_as
+    listens_to=$(sed -n 's/^    workflows: \[\(.*\)\]$/\1/p' .github/workflows/image.yml 2>/dev/null | tr -d '"'"'"' ')
+    releases_as=$(sed -n 's/^name: *//p' .github/workflows/release.yml 2>/dev/null | head -1 | tr -d '"'"'"' ')
+    [ -z "$listens_to" ] || [ "$listens_to" = "$releases_as" ] \
+      && ok "release.yml name matches image.yml" || bad "release.yml is named '$releases_as' but image.yml waits for '$listens_to': rename it back or run jb sync (R8.2)"
+    if [ ! -f compose.yaml ]; then bad "service without compose.yaml at the root (R8.3)"
+    else
+      grep -Eq '^[[:space:]]*build:' compose.yaml && bad "compose.yaml has build: use published images only (R8.3)" || ok "compose.yaml uses images only"
+      has_host_bind_mount compose.yaml && bad "compose.yaml has a host bind mount: use named volumes (R8.3)" || ok "compose.yaml has no host bind mounts"
+    fi
   fi
 
   echo "  $fails problem(s), $warns warning(s)"

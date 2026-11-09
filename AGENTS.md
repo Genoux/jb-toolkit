@@ -32,6 +32,10 @@ is about changing the toolkit itself. Read `PRODUCT.md` first.
   macOS (BSD) awk refuses newlines in `awk -v`.
 - 2026-11-06: `jb session` prints nothing for a clean project; its output
   becomes every session's context, so noise there costs every session.
+- 2026-11-08: services ship as public ghcr.io images built in CI (R8), not
+  built on the server. The server then needs no git access, no build
+  toolchain and no registry credentials; secrets stay in the server's
+  environment and never enter an image.
 
 ## Project rules
 

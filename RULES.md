@@ -103,6 +103,7 @@ the owner to run `jb` or any procedure below: run it yourself and report.
    4. `.github/workflows/release.yml` refuses a tag that disagrees with the
       manifest, runs `scripts/check`, runs `scripts/build` if present, and
       drafts a GitHub release with generated notes and everything in `dist/`.
+      A service (R8) also publishes its images (`image.yml`).
    5. Publishing the draft is the owner's decision.
 4. Release notes come from the commit subjects, which is why R3.3 matters.
 
@@ -118,6 +119,7 @@ Every project has:
 | `PRODUCT.md` | Who it is for, what it must do, what it must not. Written before code. |
 | `scripts/check` | The one command that says the project is healthy: format, lint, types, tests. CI runs exactly this. |
 | `scripts/build` | Optional. Produces release files in `dist/`. |
+| `compose.yaml` | Services only: the deploy file (R8). |
 | `.toolkit/` | Managed by `jb sync`. Do not edit. |
 | `.githooks/` | Managed by `jb sync`. Do not edit. |
 | `.demo/` | Throwaway demos (R2). Gitignored. |
@@ -151,3 +153,22 @@ Optional, when the project has them: `DESIGN.md` (UI system),
    --enable-squash-merge=false --enable-merge-commit=false --delete-branch-on-merge`).
 3. Shared design work (e.g. the Signal design system in `../signal`) is used
    when the owner asks for it; a project never copies and edits it locally.
+
+## R8. Services
+
+1. A service is a repo with a `Dockerfile` at the root or one folder down. It
+   runs on the home server (ZimaOS) from a published image, never from source.
+2. CI builds the image on a release tag and publishes it to
+   `ghcr.io/<owner>/<repo>` (root Dockerfile) or `ghcr.io/<owner>/<repo>-<folder>`
+   (`<folder>/Dockerfile`), tagged `X.Y.Z`, and `latest` unless it is a
+   pre-release. `.github/workflows/image.yml` does this, only after the
+   release workflow has passed for that tag, and is managed by `jb sync`.
+   Images are public: they hold code, never secrets.
+3. `compose.yaml` at the root is the deploy file: images only (no `build:`),
+   configuration through environment variables, state in named volumes (no
+   host bind mounts). It is what gets pasted into Portainer or a
+   ZimaOS custom app.
+4. Secrets reach a service only as environment variables set on the server;
+   `.env.example` lists them (R6.5).
+5. Making a newly published package public is a one-time step in the GitHub
+   package settings (the owner's decision, R1.2).
