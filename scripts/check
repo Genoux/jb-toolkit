@@ -98,8 +98,8 @@ foreign='{"hooks":[{"type":"command","command":"rtk hook claude"}]}'
 stale='{"hooks":[{"type":"command","command":"/old/place/bin/jb guard"}]}'
 jq -n --argjson f "$foreign" --argjson s "$stale" '{hooks: {PreToolUse: [($f + {matcher: "Bash"}), ($s + {matcher: "Bash"})], Stop: [$f]}}' > "$home/.claude/settings.json"
 jq -n --argjson f "$foreign" '{hooks: {Stop: [$f]}}' > "$home/.codex/hooks.json"
-# fake claude and npx: record the calls, touch no network
-for shim in claude npx; do printf '#!/bin/sh\necho "%s $*" >> "$HOME/shim.log"\n' "$shim" > "$tmp/shims/$shim"; chmod +x "$tmp/shims/$shim"; done
+# fake claude and npx: record the calls, touch no network, and drain stdin like the real tools do
+for shim in claude npx; do printf '#!/bin/sh\necho "%s $*" >> "$HOME/shim.log"\n[ -t 0 ] || cat >/dev/null\n' "$shim" > "$tmp/shims/$shim"; chmod +x "$tmp/shims/$shim"; done
 cat > "$tmp/kit.json" <<'KIT'
 {
   "skillsCli": "skills@9.9.9",
