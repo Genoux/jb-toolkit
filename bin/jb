@@ -635,6 +635,25 @@ cmd_install() {
 
 # ---------------------------------------------------------------- sync
 # Managed files are overwritten; owned files are created only when missing.
+# .toolkit/ is rewritten by every sync, so a project formatter that checks
+# Markdown (biome, prettier) would fail the project's CI on each one (seen in
+# noted). Biome 1 takes files.ignore; biome 2 takes "!" entries in
+# files.includes, and with no includes it means ["**"]. biome.jsonc and other
+# formatters are left to the project until one needs them.
+keep_formatters_off_toolkit() {
+  if [ -f biome.json ]; then
+    if jq -e '.files.ignore != null or (."$schema" // "" | test("/1\\."))' biome.json >/dev/null 2>&1; then
+      json_edit biome.json '.files.ignore = ((.files.ignore // []) | if index([".toolkit"]) then . else . + [".toolkit"] end)' || true
+    else
+      json_edit biome.json '.files.includes = ((.files.includes // ["**"]) | if index(["!.toolkit"]) then . else . + ["!.toolkit"] end)' || true
+    fi
+  fi
+  if compgen -G '.prettierrc*' >/dev/null || compgen -G 'prettier.config.*' >/dev/null \
+     || { [ -f package.json ] && jq -e '.prettier' package.json >/dev/null 2>&1; }; then
+    [ -f .prettierignore ] && grep -qxF '.toolkit/' .prettierignore || echo '.toolkit/' >> .prettierignore
+  fi
+}
+
 sync_into() {
   local dir=$1
   ( cd "$dir"
@@ -658,6 +677,7 @@ sync_into() {
     while IFS= read -r line; do
       [ -n "$line" ] && ! grep -qxF "$line" .gitignore && echo "$line" >> .gitignore
     done < "$TEMPLATES/stacks/$STACK/gitignore"
+    keep_formatters_off_toolkit
     # core.hooksPath lives in the config shared by every worktree, so there is
     # no per-worktree way to run two managers; the project's own wins.
     local manager; manager=$(hook_manager)

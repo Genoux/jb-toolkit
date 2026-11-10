@@ -431,6 +431,20 @@ printf 'node_modules/\n# >>> jb-toolkit (managed by jb sync; add your own lines 
 cp .gitignore "$tmp/gi.orig"; "$root/bin/jb" sync >/dev/null 2>&1 || true
 cmp -s .gitignore "$tmp/gi.orig" || fail "sync rewrote a .gitignore whose block has no end marker"
 cd "$root"
+# a project formatter that reformats .toolkit/RULES.md fails the project's CI on every sync
+new_repo fmt2 && cd "$tmp/fmt2"
+echo '{"$schema":"https://biomejs.dev/schemas/2.6.6/schema.json","files":{"includes":["**","!**/dist"]}}' > biome.json
+echo '{}' > .prettierrc
+"$root/bin/jb" sync >/dev/null 2>&1; "$root/bin/jb" sync >/dev/null 2>&1
+[ "$(jq -c .files.includes biome.json)" = '["**","!**/dist","!.toolkit"]' ] || fail "sync did not keep biome 2 off .toolkit: $(jq -c .files biome.json)"
+[ "$(grep -cxF '.toolkit/' .prettierignore)" = 1 ] || fail "sync did not keep prettier off .toolkit exactly once"
+[ -z "$(git status --porcelain --ignored=no | grep jb-backup || true)" ] || fail "sync left its biome.json backup untracked in the project"
+new_repo fmt1 && cd "$tmp/fmt1"
+echo '{"$schema":"https://biomejs.dev/schemas/1.9.4/schema.json","files":{"ignore":["dist"]}}' > biome.json
+"$root/bin/jb" sync >/dev/null 2>&1
+[ "$(jq -c .files.ignore biome.json)" = '["dist",".toolkit"]' ] || fail "sync did not keep biome 1 off .toolkit: $(jq -c .files biome.json)"
+[ ! -e .prettierignore ] || fail "sync created .prettierignore in a project without prettier"
+cd "$root"
 # never through a symlink, and never through a dangling one
 h=$(fresh_home nolink); echo '# shared' > "$tmp/shared-agents.md"; ln -s "$tmp/shared-agents.md" "$h/.codex/AGENTS.md"
 inst_home "$h" >/dev/null; [ "$(cat "$tmp/shared-agents.md")" = "# shared" ] || fail "install wrote the jb block through a symlink into a shared file"
