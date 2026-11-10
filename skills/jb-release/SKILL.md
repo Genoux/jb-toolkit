@@ -10,7 +10,7 @@ The owner's request to release is the permission to commit, push and open the pu
 1. Decide the version from the commits since the last tag (`git describe --tags --abbrev=0`, then `git log <tag>..HEAD --format=%s`): any `!`/BREAKING → major (minor while `0.y`), any `feat` → minor, else patch. Say which and why in one line. A pre-release (`-alpha.N`, `-rc.N`, …) only if the owner asks.
 2. `scripts/check` must pass on main first.
 3. `git switch -c release/vX.Y.Z` from up-to-date main, `jb bump X.Y.Z`, `git push -u origin release/vX.Y.Z`, then `gh pr create --fill`.
-4. Wait for CI (`gh pr checks --watch`). Merge with `gh pr merge --rebase --delete-branch`.
+4. Wait for CI. Right after the push, `gh pr checks` says "No checks reported" and `--watch` exits at once, so first retry `gh pr checks` every 10 s until it lists a check (give up after 2 min and report it), then `gh pr checks --watch --fail-fast`. Merge with `gh pr merge --rebase --delete-branch` only after the checks pass.
 5. `git switch main && git pull --ff-only`, `jb tag`, `git push origin vX.Y.Z`.
 6. Watch the Release workflow (`gh run watch`). Report the draft's URL (`gh release view vX.Y.Z --json url -q .url`) and tell the owner it is a draft waiting for them to publish. For an app (RULES.md R9), check the draft holds `latest.json` and a signature per bundle, and say that publishing it offers the update to every installed copy.
 
