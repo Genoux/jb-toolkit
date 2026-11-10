@@ -46,7 +46,11 @@ jobs:
       - name: Check
         run: scripts/check
 
+      # An app signs its update bundles here (R9.4); empty for everything else.
       - name: Build
+        env:
+          UPDATER_SIGNING_KEY: ${{ secrets.UPDATER_SIGNING_KEY }}
+          UPDATER_SIGNING_KEY_PASSWORD: ${{ secrets.UPDATER_SIGNING_KEY_PASSWORD }}
         run: |
           mkdir -p dist
           if [ -x scripts/build ]; then scripts/build; fi

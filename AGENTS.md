@@ -162,6 +162,14 @@ passes when it finds no command.
   post-apply check expects `~/.claude.json`, which exists once Claude Code has
   run. `jb stop` bounds `scripts/check` itself (`JB_STOP_TIMEOUT`, 150 s)
   because stock macOS has no timeout(1).
+- 2026-11-10: apps update themselves from their latest published GitHub
+  Release (R9), never by pulling source. One feed format for every stack
+  (Tauri's `latest.json`) so a CLI and a desktop app read the same thing. App
+  repos are public (owner's choice): private release assets need a token,
+  and a token shipped inside an app is a leak. A separate public releases
+  repo was the alternative, kept for when an app's source must stay private.
+  The toolkit's `release.yml` only passes the signing secrets; per-platform
+  build matrices stay in each app's own `release.yml`.
 - 2026-11-07: the toolkit holds mentality, tools, patterns and rules, not a
   UI system or design tokens; those stay in the projects that own them.
 
