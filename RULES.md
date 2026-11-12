@@ -237,14 +237,13 @@ Optional, when the project has them: `DESIGN.md` (UI system),
    shadow. White on Linux, for a dark bar; a template image on macOS, so the
    menu bar tints it.
 6. The tray glyph is the brand mark as drawn: it is scaled and centred on a
-   square canvas, never redrawn or thickened to look bigger. Scale it up
-   until the first limit is reached: a side at 87.5% of the canvas, or ink
-   (opaque area) at 30% of the canvas. On the 22 px tray the size snaps to
-   whole pixels, so edges stay sharp. Measured 2026-11-12: filling 87.5%
-   regardless of ink made Noted's n the heaviest icon in the tray (36%),
-   while Offhand and Monotub stop at the side and Noted at the ink (29%).
-   A thin mark stays lighter than the others (Squiggle, 15%): that is the
-   mark, not its size.
+   square canvas, never redrawn or thickened. Every tray glyph carries the
+   same ink: its opaque area is 22% of the canvas. A bold mark is scaled
+   down and a thin one up until they weigh the same; a mark that reaches
+   the canvas edge first stops there. Measured 2026-11-12: with ink at 29%
+   (Monotub, Noted), 25% (Offhand) and 15% (Squiggle) the n looked oversized
+   and the squiggle small in the same tray. 22% is what Squiggle reaches at
+   the full width of its canvas, so the others come down to it.
 7. Each icon has one vector source in the repo. Every exported size is
    rendered from it by a script and never edited by hand; `AGENTS.md` names
    the sources and the command.
