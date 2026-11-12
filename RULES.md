@@ -243,7 +243,9 @@ Optional, when the project has them: `DESIGN.md` (UI system),
    the canvas edge first stops there. Measured 2026-11-12: with ink at 29%
    (Monotub, Noted), 25% (Offhand) and 15% (Squiggle) the n looked oversized
    and the squiggle small in the same tray. 22% is what Squiggle reaches at
-   the full width of its canvas, so the others come down to it.
+   the full width of its canvas, so the others come down to it. A dense,
+   compact mark may go up to 25%: at 22% Noted's n looked small beside the
+   others, and reads right at 24.5%.
 7. Each icon has one vector source in the repo. Every exported size is
    rendered from it by a script and never edited by hand; `AGENTS.md` names
    the sources and the command.
