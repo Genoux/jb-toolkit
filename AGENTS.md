@@ -14,6 +14,11 @@ is about changing the toolkit itself. Read `PRODUCT.md` first.
 - `RULES.md` — the standard. Imported live from `~/.claude/CLAUDE.md`.
 - `bin/jb` — the agent's tool: install, session, new, sync, check, bump, tag.
 - `skills/` — linked into `~/.claude/skills` by install; edits apply at once.
+- Third-party skills: `jb sync` reads the list from ib-toolkit's
+  `packages/standards/external-skills.txt` on GitHub (main branch), downloads
+  each skill into the project's `.agents/skills/` and links it into
+  `.claude/skills/`. Edit the list there, never a copy here: one list keeps
+  personal and work projects on the same skills.
 - `templates/managed/` — overwritten in projects by `jb sync`.
 - `templates/project/` — created once in a project, then the project's.
 - `templates/stacks/<stack>/` — starting `scripts/check` and `.gitignore` lines.
@@ -32,6 +37,21 @@ is about changing the toolkit itself. Read `PRODUCT.md` first.
   macOS (BSD) awk refuses newlines in `awk -v`.
 - 2026-11-06: `jb session` prints nothing for a clean project; its output
   becomes every session's context, so noise there costs every session.
+
+- 2026-11-14: third-party skills are downloaded at their latest version on
+  every sync, not vendored (owner's choice), with plain `git` (sparse,
+  depth 1) rather than the `skills` npm CLI, so sync needs nothing beyond git.
+  Measured: the full list (27 skills) takes about 17 s and 41 MB, 37 MB of
+  it taste-skill's images. They go per project, not into `~/.claude/skills`,
+  so a project's skills are the same for whoever runs sync.
+
+- 2026-11-14: skills live in `.agents/skills/` (Codex, Cursor, Gemini CLI,
+  Copilot, OpenCode) with a link in `.claude/skills/`, because Claude Code
+  reads only its own folder; a copy replaces the link where symlinks fail.
+- 2026-11-14: `jb install` writes a launcher to `~/.local/bin/jb`, not a
+  symlink: Git Bash on Windows turns symlinks into copies, and a copied `jb`
+  cannot find the toolkit. CI runs `scripts/check` on Linux, macOS and
+  Windows; `bin/jb` must stay bash 3.2 compatible (macOS).
 
 ## Project rules
 

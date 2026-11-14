@@ -16,9 +16,11 @@ the owner to run `jb` or any procedure below: run it yourself and report.
 1. **New project.** When the owner pitches or names something new to build,
    follow the `jb-new-project` skill (it runs `jb new`).
 2. **Every session in a project.** The SessionStart hook runs `jb session`
-   and puts any departure from these rules in your context. Fix them as part
-   of the session, on a branch: `jb sync` re-applies managed files; the rest
-   (`scripts/check`, docs, workflows) you edit by hand. Run `jb check` again
+   and puts any departure from these rules in your context; an agent without
+   that hook (Codex, Cursor, Gemini CLI, ...) runs `jb session` itself before
+   other work. Fix them as part of the session, on a branch: `jb sync`
+   re-applies managed files; the rest (`scripts/check`, docs, workflows) you
+   edit by hand. Run `jb check` again
    to confirm, and tell the owner in one line what changed.
 3. **Project not on the standard yet.** Offer once to adopt it. On yes:
    `git switch -c chore/adopt-jb-toolkit`, `jb sync`, make `scripts/check`

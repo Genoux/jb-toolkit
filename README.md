@@ -5,6 +5,8 @@ lay out a repo, and how agents behave (local-only demos, no attribution,
 commit only when asked). Stack and UI stay free per project.
 
 **The owner runs one command, once per machine. The agent does everything else.**
+It runs wherever bash, git and jq do: macOS, Linux, and Windows through Git
+Bash (CI checks all three).
 
 ```sh
 ~/Desktop/@john/jb-toolkit/bin/jb install
@@ -17,16 +19,29 @@ and demo by themselves. Install wires four things into Claude Code:
 |---|---|---|
 | `RULES.md` | imported from `~/.claude/CLAUDE.md` | every session, in any folder, knows the standard (R0 tells the agent it runs the toolkit) |
 | Session hook | `SessionStart` in `~/.claude/settings.json` | in a project, runs `jb session`: silent when the project is clean; otherwise lists what to fix, or says the project is not adopted yet |
-| Skills | `~/.claude/skills/jb-*` | `jb-new-project` (you pitch → it scaffolds), `jb-release` (you say "release" → bump, PR, tag, draft), `jb-demo` (anything to show → local `.demo/*.html`) |
-| `jb` | `~/.local/bin/jb` | the agent's tool: `new`, `sync`, `check`, `bump`, `tag` |
+| Skills | `~/.claude/skills/jb-*` and `~/.agents/skills/jb-*` | `jb-new-project` (you pitch → it scaffolds), `jb-release` (you say "release" → bump, PR, tag, draft), `jb-demo` (anything to show → local `.demo/*.html`) |
+| `jb` | `~/.local/bin/jb` (a launcher) | the agent's tool: `new`, `sync`, `check`, `bump`, `tag` |
 
 Then, in every toolkit project, git hooks refuse off-standard commits and
 branches, and `.claude/settings.json` denies the Artifact and Claude Docs
 tools. The rules are enforced, not only written down.
 
+Every `jb new` and `jb sync` also downloads the shared third-party skills
+listed in ib-toolkit's `packages/standards/external-skills.txt` (design,
+animation, code, workflow; read from GitHub, so personal and work projects
+share one list) at their latest version into the project's `.agents/skills/`
+(read by Codex, Cursor, Gemini CLI, Copilot and OpenCode) and links each into
+`.claude/skills/` for Claude Code (a copy where links are not allowed). They
+are never committed, so a fresh clone has none: `jb check` warns, and the
+session hook has the agent run `jb sync`. A folder without the `.toolkit-
+source` marker is the project's own and is never replaced; a failed download
+only warns and removes nothing.
+
 Re-run `jb install` after moving the toolkit; it is idempotent and backs up
 `settings.json` to `settings.json.jb-backup`. Codex gets a pointer to
-`RULES.md` in `~/.codex/AGENTS.md` (no hooks or skills there).
+`RULES.md` in `~/.codex/AGENTS.md` and, like Cursor, Gemini CLI, Copilot and
+OpenCode, the skills through `~/.agents/skills`. Only Claude Code has the
+session hook; other agents run `jb session` because R0 tells them to.
 
 ## Why a scaffold that syncs, not a package
 

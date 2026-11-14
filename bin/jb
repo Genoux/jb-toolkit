@@ -65,8 +65,13 @@ render() { # template -> dest, filling {{NAME}} {{STACK}}
 cmd_install() {
   local bindir="$HOME/.local/bin"
   mkdir -p "$bindir"
-  ln -sf "$TOOLKIT/bin/jb" "$bindir/jb"
-  echo "linked $bindir/jb"
+  # A launcher, not a symlink: Git Bash on Windows turns symlinks into copies,
+  # and a copied jb cannot find the toolkit. rm first, or writing through an
+  # old symlink would overwrite bin/jb itself.
+  rm -f "$bindir/jb"
+  printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$TOOLKIT/bin/jb" > "$bindir/jb"
+  chmod +x "$bindir/jb"
+  echo "installed $bindir/jb"
   case ":$PATH:" in *":$bindir:"*) ;; *) note "add $bindir to PATH in your shell profile" ;; esac
 
   put_block "$HOME/.claude/CLAUDE.md" "<!-- >>> jb-toolkit -->" "<!-- <<< jb-toolkit -->" <<EOF
@@ -78,13 +83,16 @@ records an exception. Managed by \`jb install\`; edit the rules in the toolkit.
 EOF
   echo "anchored RULES.md in ~/.claude/CLAUDE.md"
 
-  mkdir -p "$HOME/.claude/skills"
-  local s
-  for s in "$TOOLKIT"/skills/*/; do
-    s=${s%/}
-    ln -sfn "$s" "$HOME/.claude/skills/$(basename "$s")"
+  # ~/.claude/skills for Claude Code; ~/.agents/skills for Codex, Cursor,
+  # Gemini CLI, Copilot and OpenCode.
+  local s d
+  for d in "$HOME/.claude/skills" "$HOME/.agents/skills"; do
+    for s in "$TOOLKIT"/skills/*/; do
+      s=${s%/}
+      link_dir "$s" "$d/$(basename "$s")"
+    done
   done
-  echo "linked skills: $(cd "$TOOLKIT/skills" && echo *)"
+  echo "linked skills in ~/.claude/skills and ~/.agents/skills: $(cd "$TOOLKIT/skills" && echo *)"
 
   # SessionStart hook: tells the agent where the current project stands.
   local settings="$HOME/.claude/settings.json" hook
@@ -108,6 +116,126 @@ unless its own AGENTS.md records an exception.
 EOF
     echo "anchored RULES.md in ~/.codex/AGENTS.md"
   fi
+}
+
+# ---------------------------------------------------------------- skills
+# Third-party skills every project gets (external-skills.txt), downloaded fresh
+# on each sync and never committed. The files go in .agents/skills/ (Codex,
+# Cursor, Gemini CLI, Copilot, OpenCode); Claude Code reads only
+# .claude/skills/, so each skill is linked there too. A folder without the
+# marker is the project's own and is never replaced. Portable bash: 3.2
+# (macOS) to 5 (Linux, Git Bash on Windows); no associative arrays, no empty
+# "${arr[@]}" under set -u.
+# One list for personal and work projects: ib-toolkit's, read from its main
+# branch on each sync. JB_SKILLS_LIST points at another URL or a local file.
+SKILLS_LIST="${JB_SKILLS_LIST:-https://raw.githubusercontent.com/Genoux/ib-toolkit/main/packages/standards/external-skills.txt}"
+SKILL_MARKER=.toolkit-source
+
+# link_dir <source-dir> <link>: a symlink, or a copy where symlinks are not
+# allowed (Git Bash on Windows without developer mode).
+link_dir() {
+  rm -rf "$2"
+  mkdir -p "$(dirname "$2")"
+  if ! ln -s "$1" "$2" 2>/dev/null || [ ! -e "$2/SKILL.md" ]; then
+    rm -rf "$2"
+    # A relative source is relative to the link's folder, as for the symlink.
+    cp -R "$(cd "$(dirname "$2")" && cd "$1" && pwd)" "$2"
+  fi
+}
+
+# ours <path>: true when the skill at <path> was written by this installer.
+ours() { [ -L "$1" ] || [ -f "$1/$SKILL_MARKER" ]; }
+
+repo_url() { case "$1" in *:*|/*) echo "$1" ;; *) echo "https://github.com/$1.git" ;; esac; }
+
+sparse_dir() { case "$1" in */\*) echo "${1%/\*}" ;; *.md) dirname "$1" ;; *) echo "$1" ;; esac; }
+
+# place_skill <skills-dir> <name> <source> <is-file> <provenance>
+place_skill() {
+  local dest="$1/$2"
+  if [ -e "$dest" ] && ! ours "$dest"; then SK_KEPT="$SK_KEPT $2"; return; fi
+  rm -rf "$dest"
+  mkdir -p "$dest"
+  if [ "$4" = 1 ]; then cp "$3" "$dest/SKILL.md"
+  else cp -R "$3/." "$dest/" && rm -rf "$dest/.git" "$dest/.github"; fi
+  echo '*' > "$dest/.gitignore"
+  echo "$5" > "$dest/$SKILL_MARKER"
+  SK_INSTALLED="$SK_INSTALLED $2"
+}
+
+install_external_skills() {
+  local skills="$1/.agents/skills" claude="$1/.claude/skills" list entries repo
+  SK_INSTALLED="" SK_KEPT="" SK_FAILED=""
+  case "$SKILLS_LIST" in
+    http://*|https://*)
+      list=$(curl -fsSL --max-time 30 "$SKILLS_LIST" 2>/dev/null) || {
+        echo "jb: could not download the skill list (offline?); run jb sync again later: $SKILLS_LIST" >&2
+        return 0
+      } ;;
+    *) [ -f "$SKILLS_LIST" ] || return 0; list=$(cat "$SKILLS_LIST") ;;
+  esac
+  entries=$(printf '%s\n' "$list" | sed -e 's/#.*//' | awk 'NF')
+  for repo in $(printf '%s\n' "$entries" | awk '!seen[$1]++ { print $1 }'); do
+    local tmp co mine whole=0 commit path name child found err
+    tmp=$(mktemp -d)
+    co="$tmp/repo"
+    mine=$(printf '%s\n' "$entries" | awk -v r="$repo" '$1 == r')
+    printf '%s\n' "$mine" | awk '$2 == "." { f = 1 } END { exit !f }' && whole=1
+    if [ "$whole" = 1 ]; then
+      err=$(git -c core.askPass=true clone -q --depth=1 --filter=blob:none "$(repo_url "$repo")" "$co" 2>&1) || true
+    else
+      err=$(git -c core.askPass=true clone -q --depth=1 --filter=blob:none --sparse "$(repo_url "$repo")" "$co" 2>&1) || true
+      # shellcheck disable=SC2046 # one word per listed folder
+      [ -d "$co" ] && { err=$(git -C "$co" sparse-checkout set $(printf '%s\n' "$mine" | while read -r _ path _; do sparse_dir "$path"; done | sort -u) 2>&1) || true; }
+    fi
+    if [ ! -d "$co/.git" ] || ! commit=$(git -C "$co" rev-parse --short HEAD 2>/dev/null); then
+      SK_FAILED="$SK_FAILED
+  $repo: $(printf '%s\n' "$err" | tail -1)"
+      rm -rf "$tmp"; continue
+    fi
+    mkdir -p "$skills"
+    while read -r _ path name; do
+      found=0
+      case "$path" in
+        */\*)
+          for child in "$co/${path%/\*}"/*/; do
+            [ -f "$child/SKILL.md" ] || continue
+            child=${child%/}
+            place_skill "$skills" "$(basename "$child")" "$child" 0 "$repo $path $commit"; found=1
+          done ;;
+        *.md)
+          [ -f "$co/$path" ] && { place_skill "$skills" "${name:-$(basename "$path" .md)}" "$co/$path" 1 "$repo $path $commit"; found=1; } ;;
+        .)
+          [ -f "$co/SKILL.md" ] && { place_skill "$skills" "$name" "$co" 0 "$repo $path $commit"; found=1; } ;;
+        *)
+          [ -f "$co/$path/SKILL.md" ] && { place_skill "$skills" "${name:-$(basename "$path")}" "$co/$path" 0 "$repo $path $commit"; found=1; } ;;
+      esac
+      [ "$found" = 1 ] || SK_FAILED="$SK_FAILED
+  $repo: no skill at $path"
+    done <<< "$mine"
+    rm -rf "$tmp"
+  done
+
+  # Drop skills that left the list, only after a complete download, so a
+  # network failure never deletes anything.
+  local removed="" d n
+  if [ -z "$SK_FAILED" ]; then
+    for d in "$skills"/* "$claude"/*; do
+      ours "$d" || continue
+      n=$(basename "$d")
+      case " $SK_INSTALLED " in *" $n "*) continue ;; esac
+      rm -rf "$d"
+      case " $removed " in *" $n "*) ;; *) removed="$removed $n" ;; esac
+    done
+  fi
+  for n in $SK_INSTALLED; do
+    if [ -e "$claude/$n" ] && ! ours "$claude/$n"; then SK_KEPT="$SK_KEPT $n"
+    else link_dir "../../.agents/skills/$n" "$claude/$n"; fi
+  done
+  [ -z "$SK_INSTALLED" ] || note "skills (.agents/skills, linked in .claude/skills):$SK_INSTALLED"
+  [ -z "$removed" ] || note "removed skills no longer listed:$removed"
+  [ -z "$SK_KEPT" ] || note "kept your own skills with the same name:$SK_KEPT"
+  [ -z "$SK_FAILED" ] || echo "jb: could not download some skills (offline?); run jb sync again later:$SK_FAILED" >&2
 }
 
 # ---------------------------------------------------------------- sync
@@ -158,6 +286,7 @@ sync_into() {
       note "created VERSION (0.1.0)"
     fi
   )
+  install_external_skills "$dir"
   echo "synced $dir to jb-toolkit $TOOLKIT_VERSION ($STACK)"
 }
 
@@ -256,6 +385,9 @@ cmd_check() {
   [ -z "$tracked" ] && ok "no agent folders tracked" || bad "agent folders tracked: $(echo $tracked) (R3.4)"
   tracked=$(git ls-files | grep -E '(^|/)\.env(\..+)?$' | grep -v '\.env\.example$' || true)
   [ -z "$tracked" ] || bad "env files tracked: $(echo $tracked) (R6.5)"
+  # Downloaded, never committed, so a fresh clone has none until jb sync.
+  if ls .agents/skills/*/"$SKILL_MARKER" >/dev/null 2>&1; then ok "shared skills installed"
+  else warn "shared skills not installed: run jb sync"; fi
   jq -e '(.permissions.deny // []) | index("Artifact")' .claude/settings.json >/dev/null 2>&1 \
     && ok "publishing tools denied" || bad "Artifact/Docs not denied in .claude/settings.json: run jb sync (R2)"
 
