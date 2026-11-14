@@ -22,7 +22,7 @@ really supports is in the table in `AGENTS.md`). For Claude Code that is:
 | Guard hook | `PreToolUse` (Bash) | `jb guard` refuses `--no-verify`, `commit -n`, `core.hooksPath` changes and `HUSKY=0`/`LEFTHOOK=0`/`SKIP=` on git commands |
 | Stop hook | `Stop` | `jb stop` runs `scripts/check` when the tree has changes and sends the agent back to work if it fails; honors `stop_hook_active`, silent otherwise |
 | Skills | `~/.claude/skills/jb-*` | `jb-new-project` (you pitch → it scaffolds), `jb-adopt` (existing repo → standard, in a worktree), `jb-release` (you say "release" → bump, PR, tag, draft), `jb-demo` (anything to show → local `.demo/*.html`) |
-| Baseline kit | `kit.json` | plugins, skills (pinned to a commit) and tools every machine should have; `jb install` adds what is missing, `jb session` names what is |
+| Baseline kit | `kit.json` | plugins and tools (pinned) every machine should have, and the shared skills from ib-toolkit's `external-skills.txt` at their latest version; `jb install` adds and refreshes them, `jb session` names what is missing |
 | `jb` | `~/.local/bin/jb` | the agent's tool: `new`, `sync`, `check`, `bump`, `tag` |
 
 Then, in every toolkit project, git hooks refuse off-standard commits and

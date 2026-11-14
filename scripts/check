@@ -100,19 +100,25 @@ jq -n --argjson f "$foreign" --argjson s "$stale" '{hooks: {PreToolUse: [($f + {
 jq -n --argjson f "$foreign" '{hooks: {Stop: [$f]}}' > "$home/.codex/hooks.json"
 # fake claude and npx: record the calls, touch no network, and drain stdin like the real tools do
 for shim in claude npx; do printf '#!/bin/sh\necho "%s $*" >> "$HOME/shim.log"\n[ -t 0 ] || cat >/dev/null\n' "$shim" > "$tmp/shims/$shim"; chmod +x "$tmp/shims/$shim"; done
-cat > "$tmp/kit.json" <<'KIT'
+# a local repo stands in for GitHub, so the skill list installs offline
+up=$tmp/upstream && mkdir -p "$up/skills/alpha/references" "$up/skills/beta" "$up/agents"
+printf -- '---\nname: alpha\n---\n' > "$up/skills/alpha/SKILL.md"; echo ref > "$up/skills/alpha/references/r.md"
+printf -- '---\nname: beta\n---\n' > "$up/skills/beta/SKILL.md"
+printf -- '---\nname: helper\n---\n' > "$up/agents/helper.md"
+git -C "$up" init -q -b main && git -C "$up" add -A && git -C "$up" -c core.hooksPath=/dev/null commit -q -m init
+printf '# test list\nfile://%s skills/*\nfile://%s agents/helper.md\n' "$up" "$up" > "$tmp/skills.txt"
+cat > "$tmp/kit.json" <<KIT
 {
-  "skillsCli": "skills@9.9.9",
   "agents": [
-    { "id": "claude-code", "skills": "claude-code", "tool": "cc" },
-    { "id": "codex", "skills": "codex", "tool": "cx" },
-    { "id": "ghost-agent", "skills": "ghost" }
+    { "id": "claude-code", "tool": "cc" },
+    { "id": "codex", "tool": "cx" },
+    { "id": "ghost-agent" }
   ],
   "items": [
     { "kind": "plugin", "name": "demo@demo-market", "source": "owner/demo-market" },
-    { "kind": "skills", "source": "https://example.test/s.git", "ref": "abc123", "names": ["alpha", "beta"] },
-    { "kind": "command", "name": "agents-tool", "present": "[ -e \"$HOME/agents-seen\" ]", "install": "echo {agents:tool} > \"$HOME/agents-seen\"" },
-    { "kind": "command", "name": "auto-tool", "present": "[ -e \"$HOME/auto-tool\" ]", "install": "touch \"$HOME/auto-tool\"" },
+    { "kind": "skill-list", "name": "shared skills", "url": "$tmp/skills.txt" },
+    { "kind": "command", "name": "agents-tool", "present": "[ -e \\"\$HOME/agents-seen\\" ]", "install": "echo {agents:tool} > \\"\$HOME/agents-seen\\"" },
+    { "kind": "command", "name": "auto-tool", "present": "[ -e \\"\$HOME/auto-tool\\" ]", "install": "touch \\"\$HOME/auto-tool\\"" },
     {
       "kind": "release", "name": "rtk-fake", "repo": "o/r", "version": "1.0.0",
       "assets": { "PLATFORM": { "file": "rtk-fake.tar.gz", "sha256": "SHA" } },
@@ -130,7 +136,7 @@ set_sha "$asset_sha"
 printf '#!/bin/sh\nout=; while [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; url=$1; shift; done\necho "curl $url" >> "$HOME/shim.log"; cp "%s" "$out"\n' "$tmp/rtk-fake.tar.gz" > "$tmp/shims/curl"; chmod +x "$tmp/shims/curl"
 export JB_KIT=$tmp/kit.json
 missing=$(HOME=$home "$root/bin/jb" session)
-for name in demo@demo-market alpha beta auto-tool agents-tool rtk-fake; do
+for name in demo@demo-market "shared skills" auto-tool agents-tool rtk-fake; do
   contains "$missing" "$name" || { echo "session does not list missing kit item $name" >&2; exit 1; }
 done
 install() { HOME=$home PATH="$tmp/shims:$PATH" "$root/bin/jb" install 2>&1; }
@@ -207,7 +213,11 @@ done
 # kit: plugins and skills through their CLIs, commands run unless manual
 grep -qF 'claude plugin marketplace add owner/demo-market' "$home/shim.log" || { echo "kit: marketplace not added" >&2; exit 1; }
 grep -qF 'claude plugin install demo@demo-market' "$home/shim.log" || { echo "kit: plugin not installed" >&2; exit 1; }
-grep -qF 'npx --yes skills@9.9.9 add https://example.test/s.git#abc123 -g -a claude-code codex -y -s alpha beta' "$home/shim.log" || { echo "kit: skills not installed pinned to their ref" >&2; exit 1; }
+for s in alpha beta helper; do
+  [ -f "$home/.agents/skills/$s/SKILL.md" ] || { echo "kit: skill $s not in ~/.agents/skills" >&2; exit 1; }
+  [ -f "$home/.claude/skills/$s/SKILL.md" ] || { echo "kit: skill $s not linked in ~/.claude/skills" >&2; exit 1; }
+done
+[ "$(cat "$home/.claude/skills/alpha/references/r.md")" = ref ] || { echo "kit: skill files not copied" >&2; exit 1; }
 [ -e "$home/auto-tool" ] || { echo "kit: command item not run" >&2; exit 1; }
 grep -qF 'curl https://github.com/o/r/releases/download/v1.0.0/rtk-fake.tar.gz' "$home/shim.log" || { echo "kit: release asset not fetched from the pinned tag" >&2; exit 1; }
 [ -x "$home/.local/bin/rtk-fake" ] || { echo "kit: release binary not placed in ~/.local/bin" >&2; exit 1; }
@@ -216,7 +226,7 @@ if grep -q 'probe update-guard=unset' "$home/shim.log"; then echo "kit: a versio
 # a second install finds everything present at its pin and fetches nothing
 : > "$home/shim.log"
 export JB_KIT=$tmp/kit.json
-for item in auto-tool rtk-fake; do
+for item in auto-tool rtk-fake "shared skills"; do
   still=$(HOME=$home "$root/bin/jb" session); contains "$still" "$item" && { echo "kit: $item reported missing after install" >&2; exit 1; }
 done
 HOME=$home PATH="$tmp/shims:$PATH" "$root/bin/jb" install >/dev/null 2>&1
@@ -252,8 +262,8 @@ JB_KIT=$tmp/kit-mat.json HOME=$mat "$root/bin/jb" install >/dev/null 2>&1
 [ -L "$mat/.claude/settings.json" ] || { echo "kit: a symlinked settings.json was not restored as a symlink" >&2; exit 1; }
 [ "$(readlink "$mat/.claude/settings.json")" = "$tmp/dot3/settings.json" ] || { echo "kit: the symlink now points elsewhere" >&2; exit 1; }
 jq -e '.touched == true and .keep == 1' "$tmp/dot3/settings.json" >/dev/null || { echo "kit: the tool's edit did not reach the symlink target" >&2; exit 1; }
-# the shipped kit pins every skill source to a full commit
-jq -e '[.items[] | select(.kind == "skills") | .ref | test("^[0-9a-f]{40}$")] | all' "$root/kit.json" >/dev/null || { echo "kit.json: a skills entry is not pinned to a commit" >&2; exit 1; }
+# the shipped kit takes its skills from the one list in ib-toolkit
+jq -e '[.items[] | select(.kind == "skill-list") | .url] == ["https://raw.githubusercontent.com/Genoux/ib-toolkit/main/packages/standards/external-skills.txt"]' "$root/kit.json" >/dev/null || { echo "kit.json: skills do not come from ib-toolkit's list" >&2; exit 1; }
 
 fail() { echo "$*" >&2; exit 1; }
 new_repo() { # name -> a git repo with the toolkit synced, cwd inside it
@@ -643,13 +653,33 @@ git commit -n -m x'
 guard_blocks 'echo $((1<<n))
 git commit -n -m x'
 
-# a skill deleted from an agent's skills dir is reported missing
-sk=$tmp/skillhome && rm -rf "$sk" && mkdir -p "$sk/.claude/skills/alpha" "$sk/.agents" && git init -q "$sk"
-echo '{"skills":{"alpha":{"ref":"r1"},"beta":{"ref":"r1"}}}' > "$sk/.agents/.skill-lock.json"
-printf '%s' '{"agents":[{"id":"claude-code"}],"items":[{"kind":"skills","source":"https://example.test/s.git","ref":"r1","names":["alpha","beta"]}]}' > "$tmp/kit-skills.json"
-sk_out=$( cd "$sk" && JB_KIT=$tmp/kit-skills.json HOME=$sk "$root/bin/jb" session )
-contains "$sk_out" "beta" || fail "a skill absent from the agent's skills dir was reported present"
-contains "$sk_out" "alpha" && fail "a skill that is present was reported missing"
+# skill list: the owner's own folders stay, skills-CLI copies are taken over,
+# a delisted skill goes, a failed download removes nothing, a deleted skill or
+# a week-old install is reported
+sk=$tmp/skillhome && rm -rf "$sk" && mkdir -p "$sk/.claude/skills/beta" "$sk/.agents/skills/alpha" && git init -q "$sk"
+echo mine > "$sk/.claude/skills/beta/SKILL.md"; echo old > "$sk/.agents/skills/alpha/SKILL.md"
+mkdir -p "$sk/.agents/skills/mine" && echo mine > "$sk/.agents/skills/mine/SKILL.md"
+echo '{"skills":{"alpha":{"source":"x/y"}}}' > "$sk/.agents/.skill-lock.json"
+printf 'file://%s skills/*\nfile://%s agents/helper.md\n' "$up" "$up" > "$tmp/sk-list.txt"
+printf '{"agents":[{"id":"claude-code"}],"items":[{"kind":"skill-list","name":"shared skills","url":"%s"}]}' "$tmp/sk-list.txt" > "$tmp/kit-skills.json"
+sk_jb() { ( cd "$sk" && JB_KIT=$tmp/kit-skills.json HOME=$sk "$root/bin/jb" "$@" ); }
+contains "$(sk_jb session)" "shared skills" || fail "a never-installed skill list was not reported"
+sk_jb install >/dev/null 2>&1
+[ "$(head -1 "$sk/.agents/skills/alpha/SKILL.md")" = --- ] || fail "a skills-CLI copy was not taken over by the list"
+[ "$(cat "$sk/.claude/skills/beta/SKILL.md")" = mine ] || fail "install replaced the owner's own Claude skill"
+[ "$(cat "$sk/.agents/skills/mine/SKILL.md")" = mine ] || fail "install touched an unlisted skill of the owner's"
+[ -z "$(sk_jb session)" ] || fail "session not silent after the skill list installed"
+printf 'file://%s skills/alpha\nfile://%s/missing skills/x\n' "$up" "$tmp" > "$tmp/sk-list.txt"
+sk_jb install >/dev/null 2>&1
+[ -f "$sk/.agents/skills/beta/SKILL.md" ] || fail "a failed download removed a skill"
+printf 'file://%s skills/alpha\n' "$up" > "$tmp/sk-list.txt"
+sk_jb install >/dev/null 2>&1
+[ ! -e "$sk/.agents/skills/beta" ] && [ ! -e "$sk/.agents/skills/helper" ] && [ ! -e "$sk/.claude/skills/helper" ] || fail "a skill that left the list was kept"
+[ -f "$sk/.agents/skills/mine/SKILL.md" ] || fail "removing delisted skills removed the owner's own"
+rm -rf "$sk/.agents/skills/alpha"; rm -rf "${XDG_CACHE_HOME:-$sk/.cache}/jb-toolkit"
+contains "$(sk_jb session)" "shared skills" || fail "a deleted listed skill was not reported"
+sk_jb install >/dev/null 2>&1; touch -t 202001010000 "$sk/.agents/.jb-skill-list"
+contains "$(sk_jb session)" "shared skills" || fail "a week-old skill install was not reported for refresh"
 
 # bump rollback restores each lockfile on its own
 bdir=$tmp/bumprust && rm -rf "$bdir" && mkdir -p "$bdir/.toolkit" "$tmp/rustshims" && cd "$bdir" && git init -q -b main && cp "$root/templates/managed/.toolkit/version" .toolkit/

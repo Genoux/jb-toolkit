@@ -349,22 +349,138 @@ gentle_ai_configured() {
   return 0
 }
 
-# A skill counts as installed when the CLI's lock records the pinned ref and
-# every present agent that has a known skills dir holds it.
-skill_present() {
-  local name=$1 ref=$2 agents=$3 agent dir
-  jq -e --arg n "$name" --arg r "$ref" '.skills[$n].ref == $r' "$HOME/.agents/.skill-lock.json" >/dev/null 2>&1 || return 1
-  for agent in $agents; do
-    dir=$(agent_skills_dir "$agent")
-    [ -z "$dir" ] || [ -e "$dir/$name" ] || return 1
+# ---------------------------------------------------------------- skill list
+# One list of third-party skills for personal and work projects: ib-toolkit's
+# external-skills.txt, named by the kit's skill-list item. Each skill is
+# downloaded at its latest commit (sparse, depth-1 git; nothing beyond git and
+# curl) into ~/.agents/skills, which Codex, Cursor, Gemini CLI, Copilot and
+# OpenCode read, and linked into ~/.claude/skills for Claude Code (a copy where
+# links are not allowed). A folder this installer wrote holds the marker; a
+# folder without it is the owner's own and is never replaced, except a copy the
+# skills CLI downloaded (recorded in its lock), which the list now owns.
+SKILL_MARKER=.toolkit-source
+SKILL_STATE="$HOME/.agents/.jb-skill-list"
+SKILL_MAX_AGE=$((7 * 24 * 3600)) # refreshed weekly, so "latest" stays latest
+
+link_dir() { # link_dir <source-dir> <link>
+  rm -rf "$2"
+  mkdir -p "$(dirname "$2")"
+  if ! ln -s "$1" "$2" 2>/dev/null || [ ! -e "$2/SKILL.md" ]; then
+    rm -rf "$2"
+    # A relative source is relative to the link's folder, as for the symlink.
+    cp -R "$(cd "$(dirname "$2")" && cd "$1" && pwd)" "$2"
+  fi
+}
+marked() { [ ! -L "$1" ] && [ -f "$1/$SKILL_MARKER" ]; }
+replaceable() { # the agents dir copy at $1 may be overwritten
+  [ ! -e "$1" ] && [ ! -L "$1" ] || marked "$1" \
+    || jq -e --arg n "$(basename "$1")" '.skills[$n]' "$HOME/.agents/.skill-lock.json" >/dev/null 2>&1
+}
+repo_url() { case "$1" in *:*|/*) echo "$1" ;; *) echo "https://github.com/$1.git" ;; esac; }
+sparse_dir() { case "$1" in */\*) echo "${1%/\*}" ;; *.md) dirname "$1" ;; *) echo "$1" ;; esac; }
+
+place_skill() { # place_skill <skills-dir> <name> <source> <is-file> <provenance>
+  local dest="$1/$2"
+  if ! replaceable "$dest"; then SK_KEPT="$SK_KEPT $2"; return; fi
+  rm -rf "$dest"
+  mkdir -p "$dest"
+  if [ "$4" = 1 ]; then cp "$3" "$dest/SKILL.md"
+  else cp -R "$3/." "$dest/" && rm -rf "$dest/.git" "$dest/.github"; fi
+  echo "$5" > "$dest/$SKILL_MARKER"
+  SK_INSTALLED="$SK_INSTALLED $2"
+}
+
+# skill_list_missing: true when the list was never installed, a listed
+# skill went missing, or the last install is older than SKILL_MAX_AGE.
+skill_list_missing() {
+  local n
+  [ -f "$SKILL_STATE" ] || return 0
+  [ $(( $(date +%s) - $(mtime_of "$SKILL_STATE") )) -lt "$SKILL_MAX_AGE" ] || return 0
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    [ -f "$HOME/.agents/skills/$n/SKILL.md" ] || return 0
+    [ ! -d "$HOME/.claude" ] || [ -f "$HOME/.claude/skills/$n/SKILL.md" ] || return 0
+  done < "$SKILL_STATE"
+  return 1
+}
+
+install_skill_list() { # install_skill_list <url-or-file>
+  local src=$1 skills="$HOME/.agents/skills" claude="$HOME/.claude/skills" list entries repo
+  SK_INSTALLED="" SK_KEPT="" SK_FAILED=""
+  case "$src" in
+    http://*|https://*)
+      list=$(curl -fsSL --max-time 30 "$src" 2>/dev/null) \
+        || { note "kit: could not download the skill list (offline?): $src"; return 0; } ;;
+    *) [ -f "$src" ] || { note "kit: no skill list at $src"; return 0; }; list=$(cat "$src") ;;
+  esac
+  entries=$(printf '%s\n' "$list" | sed -e 's/#.*//' | awk 'NF')
+  for repo in $(printf '%s\n' "$entries" | awk '!seen[$1]++ { print $1 }'); do
+    local tmp co mine whole=0 commit path name child found err
+    tmp=$(mktemp -d); co="$tmp/repo"
+    mine=$(printf '%s\n' "$entries" | awk -v r="$repo" '$1 == r')
+    printf '%s\n' "$mine" | awk '$2 == "." { f = 1 } END { exit !f }' && whole=1
+    if [ "$whole" = 1 ]; then
+      err=$(git -c core.askPass=true clone -q --depth=1 --filter=blob:none "$(repo_url "$repo")" "$co" 2>&1) || true
+    else
+      err=$(git -c core.askPass=true clone -q --depth=1 --filter=blob:none --sparse "$(repo_url "$repo")" "$co" 2>&1) || true
+      # shellcheck disable=SC2046 # one word per listed folder
+      [ -d "$co" ] && { err=$(git -C "$co" sparse-checkout set $(printf '%s\n' "$mine" | while read -r _ path _; do sparse_dir "$path"; done | sort -u) 2>&1) || true; }
+    fi
+    if [ ! -d "$co/.git" ] || ! commit=$(git -C "$co" rev-parse --short HEAD 2>/dev/null); then
+      SK_FAILED="$SK_FAILED $repo ($(printf '%s\n' "$err" | tail -1))"; rm -rf "$tmp"; continue
+    fi
+    mkdir -p "$skills"
+    while read -r _ path name; do
+      found=0
+      case "$path" in
+        */\*)
+          for child in "$co/${path%/\*}"/*/; do
+            [ -f "$child/SKILL.md" ] || continue
+            child=${child%/}
+            place_skill "$skills" "$(basename "$child")" "$child" 0 "$repo $path $commit"; found=1
+          done ;;
+        *.md) [ -f "$co/$path" ] && { place_skill "$skills" "${name:-$(basename "$path" .md)}" "$co/$path" 1 "$repo $path $commit"; found=1; } ;;
+        .)    [ -f "$co/SKILL.md" ] && { place_skill "$skills" "$name" "$co" 0 "$repo $path $commit"; found=1; } ;;
+        *)    [ -f "$co/$path/SKILL.md" ] && { place_skill "$skills" "${name:-$(basename "$path")}" "$co/$path" 0 "$repo $path $commit"; found=1; } ;;
+      esac
+      [ "$found" = 1 ] || SK_FAILED="$SK_FAILED $repo (no skill at $path)"
+    done <<< "$mine"
+    rm -rf "$tmp"
   done
-  return 0
+
+  # Claude Code: a link to each installed skill, never over the owner's own folder.
+  local n d removed=""
+  if [ -d "$HOME/.claude" ]; then
+    for n in $SK_INSTALLED; do
+      d="$claude/$n"
+      if [ -L "$d" ] || [ ! -e "$d" ] || marked "$d"; then link_dir "../../.agents/skills/$n" "$d"
+      else SK_KEPT="$SK_KEPT $n"; fi
+    done
+  fi
+  # Skills that left the list go, but only after a complete download, so a
+  # network failure never deletes anything; the state file is then rewritten.
+  if [ -z "$SK_FAILED" ]; then
+    for d in "$skills"/*; do
+      n=$(basename "$d")
+      marked "$d" || continue
+      case " $SK_INSTALLED " in *" $n "*) continue ;; esac
+      rm -rf "$d"
+      if [ -L "$claude/$n" ] && [ "$(readlink "$claude/$n")" = "../../.agents/skills/$n" ]; then rm -f "$claude/$n"
+      elif marked "$claude/$n"; then rm -rf "${claude:?}/$n"; fi
+      removed="$removed $n"
+    done
+    printf '%s\n' $SK_INSTALLED > "$SKILL_STATE"
+  fi
+  [ -z "$SK_INSTALLED" ] || echo "kit: installed the shared skills at their latest version:$SK_INSTALLED"
+  [ -z "$removed" ] || note "kit: removed skills no longer listed:$removed"
+  [ -z "$SK_KEPT" ] || note "kit: kept your own skills with the same name:$SK_KEPT"
+  [ -z "$SK_FAILED" ] || note "kit: could not download some skills (offline?); jb install retries:$SK_FAILED"
 }
 
 # Prints item $1 when it is missing from this machine, narrowed to what is
 # missing. An item bound to an agent that is not installed is never missing.
 kit_item_missing() {
-  local item=$1 kind agent dir name ref absent agents probe
+  local item=$1 kind agent dir name ref probe
   kind=$(jq -r .kind <<<"$item"); agent=$(jq -r '.agent // empty' <<<"$item")
   if [ -n "$agent" ]; then
     dir=$(agent_dir "$agent")
@@ -374,13 +490,10 @@ kit_item_missing() {
     plugin)
       name=$(jq -r .name <<<"$item")
       jq -e --arg id "$name" '.plugins[$id]' "$HOME/.claude/plugins/installed_plugins.json" >/dev/null 2>&1 || echo "$item" ;;
-    skills)
-      ref=$(jq -r .ref <<<"$item"); agents=$(present_agents)
-      [ -n "$agents" ] || return 0
-      absent=$(jq -r '.names[]' <<<"$item" | while IFS= read -r name; do
-        skill_present "$name" "$ref" "$agents" || echo "$name"
-      done | jq -R . | jq -sc .)
-      [ "$absent" = "[]" ] || jq -c --argjson names "$absent" '.names = $names' <<<"$item" ;;
+    skill-list)
+      [ -n "$(present_agents)" ] || return 0
+      skill_list_missing || return 0
+      echo "$item" ;;
     command)
       ( PATH="$HOME/.local/bin:$PATH"; eval "$(jq -r .present <<<"$item")" ) </dev/null || echo "$item" ;;
     release)
@@ -487,10 +600,12 @@ rules_blocked() {
 }
 
 install_kit() {
-  local item missing kind name source ref names cli agents agent command reason output
-  cli=$(jq -r '.skillsCli' "$KIT" 2>/dev/null) || return 0
+  local item missing kind name source command reason output
+  [ -f "$KIT" ] || return 0
   while IFS= read -r item; do
     missing=$(kit_item_missing "$item")
+    # The skill list tracks the latest commits, so every install refreshes it.
+    [ -n "$missing" ] || [ "$(jq -r .kind <<<"$item")" != skill-list ] || missing=$item
     [ -n "$missing" ] || continue
     if [ "$(jq -r '.writesRules // false' <<<"$missing")" = true ] && reason=$(rules_blocked); then
       note "kit: skipped $(jq -r '.name // .names[0]' <<<"$missing") ($reason): merge the dotfiles, restow, then run jb install again"
@@ -504,15 +619,7 @@ install_kit() {
           claude plugin marketplace add "$source" >/dev/null 2>&1 </dev/null || true
           claude plugin install "$name" >/dev/null 2>&1 </dev/null && echo "kit: installed plugin $name" || note "kit: could not install $name: claude plugin install $name"
         else note "kit: claude not found; run: claude plugin marketplace add $source && claude plugin install $name"; fi ;;
-      skills)
-        source=$(jq -r .source <<<"$missing"); ref=$(jq -r .ref <<<"$missing")
-        names=$(jq -r '.names | join(" ")' <<<"$missing")
-        agents=$(for agent in $(present_agents); do agent_value "$agent" skills; done | paste -sd' ' -)
-        if command -v npx >/dev/null; then
-          # shellcheck disable=SC2086
-          npx --yes "$cli" add "$source#$ref" -g -a $agents -y -s $names >/dev/null 2>&1 </dev/null \
-            && echo "kit: installed skills $names (pinned $ref)" || note "kit: could not install skills $names from $source"
-        else note "kit: npx not found; install node, then rerun jb install"; fi ;;
+      skill-list) install_skill_list "$(jq -r .url <<<"$missing")" ;;
       command)
         name=$(jq -r .name <<<"$missing"); command=$(expand_agents "$(jq -r .install <<<"$missing")")
         output=$(run_kit_command "$command") && echo "kit: installed $name" \
@@ -532,7 +639,7 @@ mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 
 kit_cache_key() {
   local item path
   { cksum < "$KIT"
-    for path in "$HOME/.claude/plugins/installed_plugins.json" "$HOME/.agents/.skill-lock.json" $(kit_config_files); do
+    for path in "$HOME/.claude/plugins/installed_plugins.json" "$HOME/.agents/.skill-lock.json" "$SKILL_STATE" $(kit_config_files); do
       echo "$path $(mtime_of "$path")"
     done
     while IFS= read -r item; do
@@ -552,7 +659,7 @@ report_missing_kit() {
       return 0
     fi
   fi
-  labels=$(kit_missing | jq -r 'if .kind == "skills" then .names[] else .name end' | paste -sd, - | sed 's/,/, /g')
+  labels=$(kit_missing | jq -r .name | paste -sd, - | sed 's/,/, /g')
   mkdir -p "$(dirname "$cache")" && printf '%s\n%s\n%s\n' "$now" "$key" "$labels" > "$cache"
   [ -z "$labels" ] || echo "jb-toolkit: this machine lacks baseline kit items: $labels. Mention it to the owner once; jb install adds them."
 }
