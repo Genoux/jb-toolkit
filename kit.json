@@ -1,39 +1,32 @@
 {
-  "skillsCli": "skills@1.7.6",
   "agents": [
     {
       "id": "claude-code",
-      "skills": "claude-code",
       "gentleAi": "claude-code",
       "impeccable": "claude"
     },
     {
       "id": "codex",
-      "skills": "codex",
       "gentleAi": "codex",
       "impeccable": "codex"
     },
     {
       "id": "cursor",
-      "skills": "cursor",
       "gentleAi": "cursor",
       "impeccable": "cursor"
     },
     {
       "id": "gemini-cli",
-      "skills": "gemini-cli",
       "gentleAi": "gemini-cli",
       "impeccable": "gemini"
     },
     {
       "id": "github-copilot",
-      "skills": "github-copilot",
       "gentleAi": "github-copilot-cli",
       "impeccable": "copilot"
     },
     {
       "id": "opencode",
-      "skills": "opencode",
       "gentleAi": "opencode",
       "impeccable": "opencode",
       "gentleAiNeeds": "opencode"
@@ -59,80 +52,15 @@
       "agent": "claude-code"
     },
     {
-      "kind": "skills",
-      "source": "https://github.com/emilkowalski/skills.git",
-      "ref": "c8a79627b59d72d764d6ab6f2c87c09a48169833",
-      "names": [
-        "emil-design-eng",
-        "animate",
-        "review-animations",
-        "improve-animations",
-        "find-animation-opportunities",
-        "remove-animations",
-        "choreograph",
-        "animation-performance",
-        "animation-vocabulary",
-        "break-ui",
-        "pick-ui-library",
-        "prototype"
-      ]
-    },
-    {
-      "kind": "skills",
-      "source": "https://github.com/jakubkrehel/make-interfaces-feel-better.git",
-      "ref": "35545ea1512ad59fa463e6b1f95ca9c052981fe6",
-      "names": [
-        "make-interfaces-feel-better"
-      ]
-    },
-    {
-      "kind": "skills",
-      "source": "https://github.com/ibelick/ui-skills.git",
-      "ref": "97dea9e747ea94d5671ef1468cbb8f9bd5f32542",
-      "names": [
-        "baseline-ui",
-        "fixing-accessibility",
-        "fixing-metadata"
-      ]
-    },
-    {
-      "kind": "skills",
-      "source": "https://github.com/benjitaylor/skills.git",
-      "ref": "299140fafd08df55a9c234e610c3f64af3f45531",
-      "names": [
-        "stageshow"
-      ]
+      "kind": "skill-list",
+      "name": "shared skills",
+      "url": "https://raw.githubusercontent.com/Genoux/ib-toolkit/main/packages/standards/external-skills.txt"
     },
     {
       "kind": "command",
       "name": "impeccable",
       "present": "[ -f \"$HOME/.claude/skills/impeccable/SKILL.md\" ]",
       "install": "cd \"$HOME\" && npx --yes impeccable@4.8.0 install --yes --user --providers={agents:impeccable} </dev/null"
-    },
-    {
-      "kind": "skills",
-      "source": "https://github.com/PatternsDev/skills.git",
-      "ref": "48bf58a488cd210bcfad280b09c3a00403964d9d",
-      "names": [
-        "ai-ui-patterns",
-        "client-side-rendering",
-        "compound-pattern",
-        "hoc-pattern",
-        "hooks-pattern",
-        "incremental-static-rendering",
-        "presentational-container-pattern",
-        "progressive-hydration",
-        "react-2026",
-        "react-composition-2026",
-        "react-data-fetching",
-        "react-render-optimization",
-        "react-selective-hydration",
-        "react-server-components",
-        "render-props-pattern",
-        "server-side-rendering",
-        "static-rendering",
-        "streaming-ssr"
-      ]
     },
     {
       "kind": "release",

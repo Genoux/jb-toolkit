@@ -13,7 +13,10 @@ is about changing the toolkit itself. Read `PRODUCT.md` first.
 
 - `RULES.md` — the standard. Imported live from `~/.claude/CLAUDE.md`.
 - `bin/jb` — the agent's tool: install, session, new, sync, check, bump, tag.
-- `kit.json` — the baseline kit: plugins, pinned skills, tools. Moving a pin is a deliberate edit.
+- `kit.json` — the baseline kit: plugins and tools (pinned; moving a pin is a
+  deliberate edit), plus one `skill-list` item naming ib-toolkit's
+  `packages/standards/external-skills.txt`, the one list of third-party skills
+  for personal and work projects. Add or drop a skill there, never here.
 - `skills/` — linked into `~/.claude/skills` by install; edits apply at once.
 - `templates/managed/` — overwritten in projects by `jb sync`.
 - `templates/project/` — created once in a project, then the project's.
@@ -85,10 +88,16 @@ passes when it finds no command.
   Codex runs hooks only after the owner trusts them in `/hooks`, so
   `jb install` prints that line: this slightly widens "the owner runs only
   `jb install`" to "plus one approval in Codex".
-- 2026-11-07: baseline kit skills install through the `skills` CLI pinned to
-  a version, from `repo#<sha>` with `-s <names>`: the CLI records `ref` in
-  `~/.agents/.skill-lock.json`, which is how `jb` tells a stale pin from a
-  current one. Nothing in the kit is left to the owner:
+- 2026-11-14: third-party skills come from one list, ib-toolkit's
+  `external-skills.txt`, at their latest commit (owner's choice), replacing
+  the 2026-11-07 skills pinned through the `skills` CLI: two lists drifted.
+  `jb install` downloads them with sparse depth-1 git (the list has single
+  agent files and whole-repo skills the CLI cannot install) into
+  `~/.agents/skills`, linked into `~/.claude/skills`; every install refreshes
+  them, and `jb session` reports them when missing or older than a week.
+  Copies the CLI downloaded (in its lock) are taken over; the owner's own
+  folders never are. Measured 2026-11-14: 27 skills, about 17 s.
+- 2026-11-07: nothing in the kit is left to the owner:
   `rtk` is a `release` item: the pinned GitHub release asset for the
   current os-arch (linux x86_64/aarch64, darwin arm64/x86_64), its sha256
   from the release's `checksums.txt` recorded in `kit.json` and verified
