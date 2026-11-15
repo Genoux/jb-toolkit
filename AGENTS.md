@@ -106,6 +106,14 @@ passes when it finds no command.
   with `npx impeccable@4.8.0 install --yes --user`; the skill's engine (0.1.x)
   is downloaded by that CLI and floats, so only the CLI is pinned, and
   "present" means the skill exists.
+- 2026-11-15: caveman is a kit `command` item, not a `skill-list` entry: it
+  is a CLI plus signed Go binaries, hooks and an MCP server, not a skill
+  folder. It installs globally (`npm install -g @caveman-ai/cli@4.1.0`, not
+  `npx`), because the hooks `cave setup` writes point into the installed
+  package and an npx cache copy can be cleaned away. `cave setup --yes`
+  wires every agent on PATH and changes nothing on a second run (checked in
+  a throwaway HOME and npm prefix). Like jb's own hooks, Codex runs its hook
+  only after the owner trusts it in `/hooks`; routing needs `cave login`.
 - 2026-11-08: gentle-ai 4.4.0 is a kit `release` item (pinned asset, sha256
   from its `checksums.txt`), then `gentle-ai install --agent claude-code
   --component persona,engram,skills --persona gentleman --skill <list>`. The

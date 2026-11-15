@@ -63,6 +63,12 @@
       "install": "cd \"$HOME\" && npx --yes impeccable@4.8.0 install --yes --user --providers={agents:impeccable} </dev/null"
     },
     {
+      "kind": "command",
+      "name": "caveman",
+      "present": "[ \"$(cave --version 2>/dev/null | jq -r .version 2>/dev/null)\" = 4.1.0 ] && [ -x \"$HOME/.caveman/bin/caveman-mcp\" ]",
+      "install": "cd \"$HOME\" && npm install -g --silent @caveman-ai/cli@4.1.0 </dev/null && cave setup --yes </dev/null"
+    },
+    {
       "kind": "release",
       "name": "rtk",
       "repo": "rtk-ai/rtk",
