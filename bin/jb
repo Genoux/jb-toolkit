@@ -406,7 +406,7 @@ skill_list_missing() {
 
 install_skill_list() { # install_skill_list <url-or-file>
   local src=$1 skills="$HOME/.agents/skills" claude="$HOME/.claude/skills" list entries repo
-  SK_INSTALLED="" SK_KEPT="" SK_FAILED=""
+  SK_INSTALLED="" SK_KEPT="" SK_FAILED="" SK_MISSING=""
   case "$src" in
     http://*|https://*)
       list=$(curl -fsSL --max-time 30 "$src" 2>/dev/null) \
@@ -443,7 +443,7 @@ install_skill_list() { # install_skill_list <url-or-file>
         .)    [ -f "$co/SKILL.md" ] && { place_skill "$skills" "$name" "$co" 0 "$repo $path $commit"; found=1; } ;;
         *)    [ -f "$co/$path/SKILL.md" ] && { place_skill "$skills" "${name:-$(basename "$path")}" "$co/$path" 0 "$repo $path $commit"; found=1; } ;;
       esac
-      [ "$found" = 1 ] || SK_FAILED="$SK_FAILED $repo (no skill at $path)"
+      [ "$found" = 1 ] || SK_MISSING="$SK_MISSING $repo (no skill at $path)"
     done <<< "$mine"
     rm -rf "$tmp"
   done
@@ -457,9 +457,10 @@ install_skill_list() { # install_skill_list <url-or-file>
       else SK_KEPT="$SK_KEPT $n"; fi
     done
   fi
-  # Skills that left the list go, but only after a complete download, so a
-  # network failure never deletes anything; the state file is then rewritten.
-  if [ -z "$SK_FAILED" ]; then
+  # Skills that left the list go, but only after a complete download with every
+  # listed skill found, so neither a network failure nor an entry upstream moved
+  # deletes anything; the state file is then rewritten.
+  if [ -z "$SK_FAILED$SK_MISSING" ]; then
     for d in "$skills"/*; do
       n=$(basename "$d")
       marked "$d" || continue
@@ -475,6 +476,7 @@ install_skill_list() { # install_skill_list <url-or-file>
   [ -z "$removed" ] || note "kit: removed skills no longer listed:$removed"
   [ -z "$SK_KEPT" ] || note "kit: kept your own skills with the same name:$SK_KEPT"
   [ -z "$SK_FAILED" ] || note "kit: could not download some skills (offline?); jb install retries:$SK_FAILED"
+  [ -z "$SK_MISSING" ] || note "kit: some listed skills are not where the list says (moved upstream?); fix their entries in the shared skills list:$SK_MISSING"
 }
 
 # Prints item $1 when it is missing from this machine, narrowed to what is
