@@ -672,6 +672,12 @@ sk_jb install >/dev/null 2>&1
 printf 'file://%s skills/alpha\nfile://%s/missing skills/x\n' "$up" "$tmp" > "$tmp/sk-list.txt"
 sk_jb install >/dev/null 2>&1
 [ -f "$sk/.agents/skills/beta/SKILL.md" ] || fail "a failed download removed a skill"
+# a repo that moved its skill is not an offline machine
+printf 'file://%s skills/alpha\nfile://%s skills/moved-away\n' "$up" "$up" > "$tmp/sk-list.txt"
+moved_out=$(sk_jb install 2>&1)
+contains "$moved_out" "no skill at skills/moved-away" || fail "a moved skill was not named by its path: $moved_out"
+case $moved_out in *offline*) fail "a moved skill was blamed on the network: $moved_out" ;; esac
+[ -f "$sk/.agents/skills/beta/SKILL.md" ] || fail "a moved skill removed another skill"
 printf 'file://%s skills/alpha\n' "$up" > "$tmp/sk-list.txt"
 sk_jb install >/dev/null 2>&1
 [ ! -e "$sk/.agents/skills/beta" ] && [ ! -e "$sk/.agents/skills/helper" ] && [ ! -e "$sk/.claude/skills/helper" ] || fail "a skill that left the list was kept"
