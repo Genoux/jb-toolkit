@@ -1017,12 +1017,24 @@ bump_rollback() {
     rm -f "$file.jb-tmp"
     git reset -q -- "$file" 2>/dev/null || true
   done
-  for file in Cargo.lock package-lock.json; do
-    [ -e "$file" ] || continue
+  while read -r file; do
     git reset -q -- "$file" 2>/dev/null || true
     git checkout -q -- "$file" 2>/dev/null || true
-  done
+  done < <(bump_lockfiles)
   echo "jb: bump failed; manifests restored" >&2
+}
+
+# Lockfiles that record the project's own version: the root's, and the one
+# beside each bumped manifest. A second Cargo or npm root (a console crate with
+# its own workspace) keeps its own lockfile, which a root-only refresh left
+# naming the old version for every build to rewrite.
+bump_lockfiles() {
+  local dir lock
+  { echo .; for dir in ${BUMP_CHANGED[@]+"${BUMP_CHANGED[@]}"}; do dirname "$dir"; done; } | sort -u | while read -r dir; do
+    for lock in Cargo.lock package-lock.json; do
+      [ -f "$dir/$lock" ] && echo "$dir/$lock"
+    done
+  done
 }
 
 # Stage a lockfile the bump rewrote, unless git ignores it.
@@ -1056,9 +1068,14 @@ cmd_bump() {
   [ "$(.toolkit/version 2>/dev/null)" = "$new" ] || die "bump did not take (.toolkit/version says $(.toolkit/version 2>&1))"
   for file in ${BUMP_CHANGED[@]+"${BUMP_CHANGED[@]}"}; do git add "$file"; done
 
-  # Lockfiles that record the project's own version.
-  if [ -f Cargo.lock ]; then cargo update --workspace --offline -q 2>/dev/null || cargo metadata --format-version 1 >/dev/null; stage_unless_ignored Cargo.lock; fi
-  if [ -f package-lock.json ]; then npm install --package-lock-only --ignore-scripts -s; stage_unless_ignored package-lock.json; fi
+  local lock
+  while read -r lock; do
+    case "$lock" in
+      *Cargo.lock) (cd "$(dirname "$lock")" && { cargo update --workspace --offline -q 2>/dev/null || cargo metadata --format-version 1 >/dev/null; }) ;;
+      *package-lock.json) (cd "$(dirname "$lock")" && npm install --package-lock-only --ignore-scripts -s) ;;
+    esac || exit 1
+    stage_unless_ignored "$lock"
+  done < <(bump_lockfiles)
 
   [ "$(.toolkit/version)" = "$new" ] || die "bump did not take: .toolkit/version still says $(.toolkit/version)"
   git commit -q -m "chore: bump version to $new"

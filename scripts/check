@@ -697,6 +697,17 @@ PATH="$tmp/rustshims:$PATH" "$root/bin/jb" bump 0.4.0 >/dev/null 2>&1 && fail "b
 [ -z "$(git status --porcelain)" ] || fail "rollback left the tree dirty"
 cd "$root"
 
+# bump refreshes the lockfile beside every bumped manifest, not only the root's
+bdir=$tmp/bumpnested && rm -rf "$bdir" && mkdir -p "$bdir/.toolkit" "$bdir/crates/app" "$tmp/lockshims" && cd "$bdir" && git init -q -b main && cp "$root/templates/managed/.toolkit/version" .toolkit/
+printf '[package]\nname = "x"\nversion = "0.3.0"\n' | tee Cargo.toml > crates/app/Cargo.toml; echo '# lock' | tee Cargo.lock > crates/app/Cargo.lock
+echo crates/app/Cargo.toml > .toolkit/version-files
+git add -A && git -c core.hooksPath=/dev/null commit -q -m "chore: start" && git switch -q -c release/v0.4.0
+printf '#!/bin/sh\necho "# refreshed" > Cargo.lock\n' > "$tmp/lockshims/cargo"; chmod +x "$tmp/lockshims/cargo"
+PATH="$tmp/lockshims:$PATH" "$root/bin/jb" bump 0.4.0 >/dev/null 2>&1 || fail "bump failed with a second Cargo root"
+contains "$(git show --stat --format= HEAD)" "crates/app/Cargo.lock" || fail "bump left a second Cargo root's lockfile stale"
+[ -z "$(git status --porcelain)" ] || fail "bump left the tree dirty: $(git status --porcelain)"
+cd "$root"
+
 # stop is bounded without timeout(1)
 bs=$tmp/slowcheck && rm -rf "$bs" && mkdir -p "$bs/scripts" "$bs/.toolkit" && cd "$bs" && git init -q -b main
 printf '#!/bin/sh\nsleep 30\nexit 1\n' > scripts/check && chmod +x scripts/check && git add -A && git -c core.hooksPath=/dev/null commit -q -m "chore: start" && echo x > dirty.txt
