@@ -52,6 +52,12 @@
       "agent": "claude-code"
     },
     {
+      "kind": "plugin",
+      "name": "egm@egm",
+      "source": "google/elephant-goldfish-model",
+      "agent": "claude-code"
+    },
+    {
       "kind": "skill-list",
       "name": "shared skills",
       "url": "https://raw.githubusercontent.com/Genoux/ib-toolkit/main/packages/standards/external-skills.txt"
