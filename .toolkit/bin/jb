@@ -712,9 +712,18 @@ impeccable_dirs() {
 # without it, and without jb's marker, is the owner's and stays.
 impeccable_installed() { [ -e "$1/scripts/impeccable" ] || marked "$1"; }
 
+# Its installer also writes impeccable-* agents into each agent's agents/.
+impeccable_agents() {
+  local agent file
+  for agent in $(present_agents); do
+    for file in "$(agent_dir "$agent")"/agents/impeccable-*; do [ ! -f "$file" ] || echo "$file"; done
+  done
+}
+
 impeccable_left() {
   local dir file
   for dir in $(impeccable_dirs); do impeccable_installed "$dir" && return 0; done
+  [ -z "$(impeccable_agents)" ] || return 0
   for file in $(global_hook_paths); do grep -qsF "$IMPECCABLE_HOOK" "$file" && return 0; done
   return 1
 }
@@ -722,6 +731,7 @@ impeccable_left() {
 retire_impeccable() {
   local dir file
   for dir in $(impeccable_dirs); do if impeccable_installed "$dir"; then rm -rf "$dir"; fi; done
+  for file in $(impeccable_agents); do rm -f "$file"; done
   for file in $(global_hook_paths); do
     grep -qsF "$IMPECCABLE_HOOK" "$file" || continue
     json_edit "$file" --arg h "$IMPECCABLE_HOOK" '
