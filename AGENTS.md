@@ -186,6 +186,11 @@ Unverified in the docs and so assumed: Copilot's `toolArgs` JSON string;
   and `head` out of pipes because pipefail turns their early exit into a
   failure. `jb stop` bounds `scripts/check` itself (`JB_STOP_TIMEOUT`, 150 s)
   because stock macOS has no timeout(1).
+- 2026-11-21: `jb check` judges commit history only from the commit that
+  adopted the standard (the one adding `.toolkit/toolkit-version`). overview
+  carried three attribution lines from before its adoption; rewriting a
+  public history was rejected, and an R3.4 exception would also hide the
+  agent-folder check.
 - 2026-11-10: apps update themselves from their latest published GitHub
   Release (R9), never by pulling source. One feed format for every stack
   (Tauri's `latest.json`) so a CLI and a desktop app read the same thing. App

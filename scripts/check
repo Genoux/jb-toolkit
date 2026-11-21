@@ -889,4 +889,15 @@ inst_home "$ra" "$rk" >/dev/null
 [ ! -e "$ra/.claude/agents/impeccable-documenter.md" ] && [ ! -e "$ra/.codex/agents/impeccable-finish-reviewer.md" ] || fail "retiring impeccable left its agent files"
 [ "$(cat "$ra/.claude/agents/my-agent.md")" = mine ] || fail "retiring impeccable removed the owner's own agent"
 
+# history from before a project adopted the standard is not judged; after it is
+new_repo history && cd "$tmp/history" && git switch -q -c feat/history
+git -c core.hooksPath=/dev/null commit -q --allow-empty -m "chore: old work" -m "Co-Authored-By: someone <a@b>"
+git add -A >/dev/null; git commit -q -m "chore: adopt jb-toolkit"
+out=$("$root/bin/jb" check 2>&1) || true
+contains "$out" "no agent attribution in history" || fail "check judged attribution lines from before the project adopted the standard: $out"
+git -c core.hooksPath=/dev/null commit -q --allow-empty -m "chore: new work" -m "Co-Authored-By: someone <a@b>"
+out=$("$root/bin/jb" check 2>&1) || true
+contains "$out" "1 attribution lines in history" || fail "check missed an attribution line after adoption: $out"
+cd "$root"
+
 echo "toolkit check passed"
