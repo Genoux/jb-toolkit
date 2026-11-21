@@ -880,4 +880,12 @@ out=$(inst_home "$rj" "$rk")
 contains "$out" 'could not remove global jb rules and hooks' || fail "a jb hook in a JSONC hooks file was not reported: $out"
 cmp -s "$rj/.codex/hooks.json" "$tmp/rj.orig" || fail "a JSONC hooks file was edited"
 
+# impeccable's agent files go with it; the owner's own agents stay
+ra=$(fresh_home retire-agents); mkdir -p "$ra/.claude/agents" "$ra/.codex/agents"
+echo x > "$ra/.claude/agents/impeccable-documenter.md"; echo x > "$ra/.codex/agents/impeccable-finish-reviewer.md"; echo mine > "$ra/.claude/agents/my-agent.md"
+contains "$(cd "$ra" && git init -q 2>/dev/null; JB_KIT=$rk HOME=$ra "$root/bin/jb" session)" 'impeccable' || fail "impeccable's leftover agent files are not reported"
+inst_home "$ra" "$rk" >/dev/null
+[ ! -e "$ra/.claude/agents/impeccable-documenter.md" ] && [ ! -e "$ra/.codex/agents/impeccable-finish-reviewer.md" ] || fail "retiring impeccable left its agent files"
+[ "$(cat "$ra/.claude/agents/my-agent.md")" = mine ] || fail "retiring impeccable removed the owner's own agent"
+
 echo "toolkit check passed"
