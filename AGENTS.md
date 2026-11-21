@@ -11,16 +11,30 @@ is about changing the toolkit itself. Read `PRODUCT.md` first.
 
 ## Layout
 
-- `RULES.md` — the standard. Imported live from `~/.claude/CLAUDE.md`.
+- `RULES.md` — the standard. `jb sync` copies it into each project's
+  `.toolkit/RULES.md`, which the project's `AGENTS.md` points to.
 - `bin/jb` — the agent's tool: install, session, new, sync, check, bump, tag.
-- `kit.json` — the baseline kit: plugins and tools (pinned; moving a pin is a
-  deliberate edit), plus one `skill-list` item naming ib-toolkit's
-  `packages/standards/external-skills.txt`, the one list of third-party skills
-  for personal and work projects. Add or drop a skill there, never here.
-- `skills/` — linked into `~/.claude/skills` by install; edits apply at once.
+  `jb sync` copies it into each project as `.toolkit/bin/jb`, the copy the
+  project's agent hooks call; that copy refuses `new`, `sync` and `install`
+  (they need the toolkit's templates) and reads the machine's toolkit, when
+  `jb install` linked one, for the kit and the latest version.
+- `kit.json` — the global baseline: the few plugins and tools every project
+  needs (pinned; moving a pin is a deliberate edit), no skills. `retired` lists what the kit once installed and dropped, each with its own
+  `present` test and `remove` step: `jb install` removes them, `jb session`
+  reports them.
+- `skills/` — jb's own skills, installed into every project by `jb sync`
+  like the stack's skills (`.agents/skills/<name>`, linked into
+  `.claude/skills`, never committed); a project picks up edits on its next sync.
+- `.github/workflows/verify.yml` — the reusable CI every project's `ci.yml`
+  calls: `scripts/check`, `jb check --ci`, gitleaks. The repo is public so
+  public projects can call it.
 - `templates/managed/` — overwritten in projects by `jb sync`.
 - `templates/project/` — created once in a project, then the project's.
-- `templates/stacks/<stack>/` — starting `scripts/check` and `.gitignore` lines.
+- `templates/stacks/<stack>/` — starting `scripts/check` and `.gitignore` lines,
+  and the stack's skills: `skills.txt` (`<repo> <path> [name]`, fetched at
+  their latest commit) and `skill-commands` (`<name> <command>`, a tool that
+  installs its own skill: impeccable for `js` and `static`). `jb sync`
+  installs both into the project; jb's lists, not ib-toolkit's.
 - `scripts/check` — syntax, shellcheck when installed, and an end-to-end run
   in a temp dir: new project, `jb check`, silent `jb session`, hooks refusing,
   `jb bump`.
@@ -29,30 +43,27 @@ is about changing the toolkit itself. Read `PRODUCT.md` first.
 
 `kit.json` › `agents` is the one list of agents the owner uses, each with the id
 every external tool knows it by. `bin/jb` names agents only in the adapter
-functions (`agent_dir`, `agent_rules_file`, `agent_hook_file`, ...), one case
-per agent, keyed by that list. Enforcement does not depend on any agent: git
-hooks, `scripts/check` and CI do the work; agent hooks (`jb guard`, `jb stop`,
-`jb session`) are optional adapters, and every agent reads the same rules
-through the project's `AGENTS.md`, which points to `.toolkit/RULES.md`. What
-is wired for each, checked against the vendors' docs on 2026-11-08:
+functions (`agent_dir`, `agent_rules_file`, `agent_project_hook_file`, ...),
+one case per agent, keyed by that list. Enforcement does not depend on any
+agent: git hooks, `scripts/check` and CI do the work; agent hooks (`jb guard`,
+`jb stop`, `jb session`) are optional adapters, and every agent reads the
+same rules through the project's `AGENTS.md`, which points to
+`.toolkit/RULES.md`. Nothing is wired at user level any more: `jb sync` wires
+each project's own hook file, calling the project's `.toolkit/bin/jb`, for
+Claude Code always and for the other agents installed on the machine, and
+only into folders the managed `.gitignore` keeps untracked (R3.4). Checked
+against the vendors' docs on 2026-11-21:
 
-| Agent | Rules (user level) | Project rules | Hooks (jb adapter) | Skills CLI / gentle-ai / impeccable |
-|---|---|---|---|---|
-| claude-code | `~/.claude/CLAUDE.md` `@import` | `CLAUDE.md` imports `AGENTS.md` | `settings.json`: SessionStart, PreToolUse (Bash), Stop | claude-code / claude-code / claude |
-| codex | `~/.codex/AGENTS.md` pointer | `AGENTS.md` | `hooks.json`: same three; owner trusts them in `/hooks` | codex / codex / codex |
-| cursor | none documented (user rules live in its settings UI) | `AGENTS.md` | `hooks.json`: beforeShellExecution (guard), stop (followup_message); no session hook: sessionStart output is undocumented | cursor / cursor / cursor |
-| gemini-cli | `~/.gemini/GEMINI.md` `@import` | `AGENTS.md`, because install adds it to `context.fileName` | `settings.json`: SessionStart (additionalContext), BeforeTool (run_shell_command), AfterAgent (deny + reason) | gemini-cli / gemini-cli / gemini |
-| github-copilot (CLI) | `~/.copilot/copilot-instructions.md` pointer | `AGENTS.md` | `~/.copilot/hooks/jb-toolkit.json`: sessionStart, preToolUse, agentStop (block + reason) | github-copilot / github-copilot-cli / copilot |
-| opencode | `~/.config/opencode/AGENTS.md` pointer | `AGENTS.md` | none: only JS plugins, no JSON hook system | opencode / opencode / opencode |
+| Agent | Rules | Project hooks (jb sync) | Source |
+|---|---|---|---|
+| claude-code | `CLAUDE.md` imports `AGENTS.md` | `.claude/settings.json`: SessionStart, PreToolUse (Bash), Stop, calling `"$CLAUDE_PROJECT_DIR"/.toolkit/bin/jb` | https://code.claude.com/docs/en/hooks ("Hook locations"; `${CLAUDE_PROJECT_DIR}` "the project root where the session started") |
+| codex | `AGENTS.md` | `.codex/hooks.json`: same three, calling `"$(git rev-parse --show-toplevel)"/.toolkit/bin/jb` (hooks run in the session's cwd; the docs say to resolve from the git root). Codex loads them only in a trusted project, after the owner approves them in `/hooks`; sync says so the first time | https://learn.chatgpt.com/docs/hooks (was developers.openai.com/codex/hooks) |
+| cursor | `AGENTS.md` | `.cursor/hooks.json`: beforeShellExecution (guard), stop (followup_message), calling `.toolkit/bin/jb` ("Project hooks run from the project root"); no session hook: sessionStart output is undocumented | https://cursor.com/docs/agent/hooks |
+| github-copilot (CLI) | `AGENTS.md` | not wired: repository hooks are `.github/hooks/*.json` (or `.github/copilot/settings.json`), committed with the project; `settings.local.json` there is only "typically gitignored". `--agent github-copilot` keeps its shapes | https://docs.github.com/en/copilot/reference/hooks-configuration |
+| opencode | `AGENTS.md` | none: only JS plugins, no JSON hook system | — |
 
-Copilot's user-level hooks directory (`~/.copilot/hooks/*.json`, or
-`$COPILOT_HOME/hooks`) is documented for the CLI on both the "About hooks" and
-the hooks-reference pages of docs.github.com (re-checked 2026-11-08); VS Code
-and the cloud agent read repository hooks only, so they are not covered.
-
-Unverified in the docs and so assumed: Gemini's `tool_input.command` argument
-name and Copilot's `toolArgs` JSON string; `jb guard` reads both shapes and
-passes when it finds no command.
+Unverified in the docs and so assumed: Copilot's `toolArgs` JSON string;
+`jb guard` reads it and passes when it finds no command.
 
 ## Decisions
 
@@ -82,102 +93,96 @@ passes when it finds no command.
   package.json, the `[package]`/`[project]` table for TOML). It once read
   pnpm's version from `devEngines`; no version is a failure, never a guess.
 - 2026-11-07: `jb guard` (PreToolUse) and `jb stop` (Stop) are subcommands of
-  `jb`, wired into Claude Code and Codex by `jb install`. Both take the same
+  `jb`, wired into Claude Code and Codex (by `jb sync`, per project, since
+  2026-11-21). Both take the same
   hook JSON shape, so no adapter. `jb stop` blocks with
   `{"decision":"block","reason":...}` and returns early on `stop_hook_active`.
   Codex runs hooks only after the owner trusts them in `/hooks`, so
-  `jb install` prints that line: this slightly widens "the owner runs only
+  `jb sync` prints that line: this slightly widens "the owner runs only
   `jb install`" to "plus one approval in Codex".
-- 2026-11-14: third-party skills come from one list, ib-toolkit's
-  `external-skills.txt`, at their latest commit (owner's choice), replacing
-  the 2026-11-07 skills pinned through the `skills` CLI: two lists drifted.
-  `jb install` downloads them with sparse depth-1 git (the list has single
-  agent files and whole-repo skills the CLI cannot install) into
-  `~/.agents/skills`, linked into `~/.claude/skills`; every install refreshes
-  them, and `jb session` reports them when missing or older than a week.
-  Copies the CLI downloaded (in its lock) are taken over; the owner's own
-  folders never are. Measured 2026-11-14: 27 skills, about 17 s.
 - 2026-11-07: nothing in the kit is left to the owner:
   `rtk` is a `release` item: the pinned GitHub release asset for the
   current os-arch (linux x86_64/aarch64, darwin arm64/x86_64), its sha256
   from the release's `checksums.txt` recorded in `kit.json` and verified
   before unpacking into `~/.local/bin`, then `rtk init -g --auto-patch`.
-  No remote script is piped into sh. `impeccable` installs non-interactively
-  with `npx impeccable@4.8.0 install --yes --user`; the skill's engine (0.1.x)
-  is downloaded by that CLI and floats, so only the CLI is pinned, and
-  "present" means the skill exists.
-- 2026-11-15: caveman is a kit `command` item, not a `skill-list` entry: it
-  is a CLI plus signed Go binaries, hooks and an MCP server, not a skill
-  folder. It installs globally (`npm install -g @caveman-ai/cli@4.1.0`, not
-  `npx`), because the hooks `cave setup` writes point into the installed
-  package and an npx cache copy can be cleaned away. `cave setup --yes`
-  wires every agent on PATH and changes nothing on a second run (checked in
-  a throwaway HOME and npm prefix). Like jb's own hooks, Codex runs its hook
-  only after the owner trusts it in `/hooks`; routing needs `cave login`.
-- 2026-11-08: gentle-ai 4.4.0 is a kit `release` item (pinned asset, sha256
-  from its `checksums.txt`), then `gentle-ai install --agent claude-code
-  --component persona,engram,skills --persona gentleman --skill <list>`. The
-  explicit `--skill` list is the catalog minus `branch-pr`,
-  `issue-creation` and the retired `sdd-*` skills (4.x has a native SDD
-  dispatcher; the orchestrator block installs without them); gentle-ai records it in its state, so `gentle-ai sync`
-  does not bring them back (checked in a throwaway HOME). Files installed
-  before this stay: gentle-ai never deletes them, and RULES.md R1.5 tells
-  agents they do not apply. Its skills are not pinned individually: two
-  managers would fight over the same files.
-- 2026-11-08: gentle-ai replaces its own binary on any invocation, even
-  `--version` or `--help` (internal/app/selfupdate.go). `jb` exports
-  `GENTLE_AI_NO_SELF_UPDATE=1` for everything it runs, so the pin only moves
-  by editing `kit.json`. Never run gentle-ai bare against a real home.
-- 2026-11-08: gentle-ai 4.4.0 refuses to write a symlinked
-  `~/.claude/CLAUDE.md` ("refusing to read symlink"; no override) and rolls
-  back, leaving the file untouched. With a regular file, `jb install` and
-  gentle-ai `install`/`sync` keep each other's blocks in either order, twice
-  (scripts/check). `jb install` runs the kit last, after anchoring RULES.md.
-- 2026-11-08: the agent's rules file belongs to the installers (jb and
-  gentle-ai each own a block), so `jb install` turns a symlinked one into a
+  No remote script is piped into sh.
+- 2026-11-21: ponytail and caveman are out of the kit. Both act on every
+  response: ponytail's SessionStart hook demands the shortest diff even for
+  UI and UX decisions, and caveman's tool hooks elided sections of file reads
+  the agent was editing. Lean-code and compression tools are each developer's
+  choice, installed by hand, never pushed by the kit.
+  Dropping an item from `items` uninstalled nothing, so the machine kept
+  both, and caveman's proxy kept compressing every session: they are
+  `retired` entries now, removed through each tool's own commands (`claude
+  plugin uninstall`, `cave disable`, `npm uninstall -g`). `~/.caveman` (its
+  databases and credentials) is the owner's data and stays; a caveman proxy
+  still running serves the sessions started before, until they restart.
+  superpowers is retired with them: its session hook told the agent to load
+  a skill on a 1% chance, so a hundred skill descriptions competed with
+  RULES.md on every request.
+- 2026-11-21: fresh start, owner's choice: nothing that tells the agent how
+  to work is installed globally any more. 115 global skills (five UI
+  authorities that contradicted each other) and gentle-ai's 540-line
+  orchestrator in every rules file made sessions lose the thread. The global
+  kit keeps tools only: engram, context7, egm, rtk. gentle-ai (orchestrator,
+  review agents, skills, its duplicate engram block), impeccable and the
+  shared skill list are `retired`; gentle-ai 4.4.0's own `uninstall` leaves
+  its orchestrator blocks, so `retire_gentle_ai` strips every
+  `<!-- gentle-ai:* -->` block afterwards. A retire step removes only what the
+  retired tool installed (impeccable's folders hold its `scripts/` engine;
+  empty hook lists the owner had stay); a block without its end marker or a
+  hooks file jq cannot read is reported and left byte for byte. Skills, impeccable included as the
+  one UI authority, go into each project by stack, in ib-toolkit's shape
+  (`.agents/skills/<name>`, linked into `.claude/skills`), from jb's own
+  lists: the two toolkits look alike and share nothing (owner: one for
+  personal projects, one for work). Each installed folder holds a
+  `.gitignore` of `*`, so nothing jb installs is committed and the project's
+  own skills beside it still are; the list's state lives in the git dir.
+  impeccable installs with `--project --no-hooks`: its engine binary is
+  per-platform, and its hooks are what the fresh start removed.
+- 2026-11-21: jb is per project (owner: "jb should be per proejct now").
+  `jb sync` copies the CLI into `.toolkit/bin/jb`, wires each agent's
+  project hooks to that copy and installs jb's own skills into the project;
+  `jb install` keeps tools only: the `~/.local/bin/jb` link the agent runs
+  `new`, `sync` and `check` with, the import of the owner's `personal.md`,
+  the kit and its `retired` removals. The global RULES.md block, the global
+  hooks and the global skill links are a `retired` entry ("global jb rules
+  and hooks") that removes exactly those, recognised by marker, command or
+  link target. A session hook in a project now runs the version that project
+  was synced at, so an old toolkit elsewhere never judges it, and a clone
+  works with the hooks of its own commit. Rejected: keeping the global hooks
+  (they ran in every folder, adopted or not, and the rules they carried
+  reached projects the owner keeps off the standard); hooks calling
+  `~/.local/bin/jb` from the project (a project would still depend on a
+  global install); wiring Copilot CLI (its project hooks sit in
+  `.github/hooks`, which a project commits). Gemini CLI is no longer a
+  supported agent: the owner does not use it. The cost: a repository not yet
+  adopted gets no session hook and no rules, so adoption starts when the
+  owner asks, from that repo or from a session in another project.
+- 2026-11-08: the agent's rules file belongs to `jb install`, so it turns a symlinked one into a
   regular file once `personal.md` exists beside it in the agent's config dir;
   the owner's own rules live there, in the dotfiles, and the generated file
   imports it. Without `personal.md` the link is left alone, so no content is
   ever dropped. `jb install` also runs kit commands on regular copies of any
   symlinked rules or hook file and writes the result back through the link,
-  because gentle-ai will not touch a symlink. `@RTK.md`, added to CLAUDE.md by
+  because some tools refuse a symlinked config ("refusing to read symlink"). `@RTK.md`, added to CLAUDE.md by
   `rtk init`, is not carried over when CLAUDE.md is regenerated; the rtk hook
   works without it.
-- 2026-11-08: gentle-ai telemetry is switched off with its own opt-out
-  (`gentle-ai telemetry disable`, persisted state, checked through
-  `telemetry status --json`) as a kit item, not by editing the hook entries
-  it keeps re-adding on every `sync`. The hooks stay but send nothing.
 - 2026-11-08: nothing the owner wrote is ever lost to a failed edit. JSON goes
   through `json_edit` (temp file beside it, valid and non-empty, then written
   in place; unparsable files skipped with a note; one backup, never
   overwritten). `put_block` refuses unless each marker is a whole line
   appearing once, end after start, and never writes through a symlink.
-  `jb install` refuses to run from a linked worktree (its links would dangle),
-  and kit items marked `writesRules` (gentle-ai) wait until no present agent's
-  rules file is still linked into the dotfiles: merge dotfiles, restow, then
-  `jb install`. `jb stop` blocks the same failing output at most once, keyed
+  `jb install` refuses to run from a linked worktree (its `~/.local/bin/jb`
+  link would dangle).
+  `jb stop` blocks the same failing output at most once, keyed
   by a hash in the git dir, whatever the agent reports about loops.
   `jb session` caches the kit check for an hour (keyed by kit, state files
   and binaries) because it runs under a 15 s hook timeout.
-- 2026-11-08: gentle-ai is two kit items: the `release` binary and a
-  `command` item `gentle-ai config` (`writesRules`) whose present test,
-  `gentle_ai_configured`, looks for gentle-ai's own persona block in each
-  rules file it manages plus its state file. Having the binary at the pin is
-  not enough: on the first real install CLAUDE.md is regenerated and must be
-  given gentle-ai's blocks again. Agent hooks call `$HOME/.local/bin/jb`, not
-  the toolkit's path. `scripts/check` runs under bash 3.2 (stock macOS) and
-  keeps `grep -q` and `head` out of pipes because pipefail turns their early
-  exit into a failure.
-- 2026-11-08: Codex keeps its built-in prompt. gentle-ai's engram component
-  always sets `model_instructions_file` and `experimental_compact_prompt_file`
-  in `~/.codex/config.toml` (no option skips them), so `jb install` removes
-  exactly those two top-level keys after the kit has run, idempotently, through
-  a temp file written in place (links stay), leaving every other byte alone;
-  keys inside a table are kept. gentle-ai may still manage Codex's skills and
-  AGENTS.md blocks. gentle-ai is only given agents whose CLI is on PATH
-  (`gentleAiNeeds` in `kit.json`; it errors without `opencode`), and its
-  post-apply check expects `~/.claude.json`, which exists once Claude Code has
-  run. `jb stop` bounds `scripts/check` itself (`JB_STOP_TIMEOUT`, 150 s)
+- 2026-11-08: agent hooks call jb by a path that survives moving the
+  toolkit (since 2026-11-21 the project's own `.toolkit/bin/jb`). `scripts/check` runs under bash 3.2 (stock macOS) and keeps `grep -q`
+  and `head` out of pipes because pipefail turns their early exit into a
+  failure. `jb stop` bounds `scripts/check` itself (`JB_STOP_TIMEOUT`, 150 s)
   because stock macOS has no timeout(1).
 - 2026-11-10: apps update themselves from their latest published GitHub
   Release (R9), never by pulling source. One feed format for every stack

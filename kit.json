@@ -1,50 +1,22 @@
 {
   "agents": [
     {
-      "id": "claude-code",
-      "gentleAi": "claude-code",
-      "impeccable": "claude"
+      "id": "claude-code"
     },
     {
-      "id": "codex",
-      "gentleAi": "codex",
-      "impeccable": "codex"
+      "id": "codex"
     },
     {
-      "id": "cursor",
-      "gentleAi": "cursor",
-      "impeccable": "cursor"
+      "id": "cursor"
     },
     {
-      "id": "gemini-cli",
-      "gentleAi": "gemini-cli",
-      "impeccable": "gemini"
+      "id": "github-copilot"
     },
     {
-      "id": "github-copilot",
-      "gentleAi": "github-copilot-cli",
-      "impeccable": "copilot"
-    },
-    {
-      "id": "opencode",
-      "gentleAi": "opencode",
-      "impeccable": "opencode",
-      "gentleAiNeeds": "opencode"
+      "id": "opencode"
     }
   ],
   "items": [
-    {
-      "kind": "plugin",
-      "name": "ponytail@ponytail",
-      "source": "DietrichGebert/ponytail",
-      "agent": "claude-code"
-    },
-    {
-      "kind": "plugin",
-      "name": "superpowers@claude-plugins-official",
-      "source": "anthropics/claude-plugins-official",
-      "agent": "claude-code"
-    },
     {
       "kind": "plugin",
       "name": "engram@engram",
@@ -58,21 +30,10 @@
       "agent": "claude-code"
     },
     {
-      "kind": "skill-list",
-      "name": "shared skills",
-      "url": "https://raw.githubusercontent.com/Genoux/ib-toolkit/main/packages/standards/external-skills.txt"
-    },
-    {
-      "kind": "command",
-      "name": "impeccable",
-      "present": "[ -f \"$HOME/.claude/skills/impeccable/SKILL.md\" ]",
-      "install": "cd \"$HOME\" && npx --yes impeccable@4.8.0 install --yes --user --providers={agents:impeccable} </dev/null"
-    },
-    {
-      "kind": "command",
-      "name": "caveman",
-      "present": "[ \"$(cave --version 2>/dev/null | jq -r .version 2>/dev/null)\" = 4.1.0 ] && [ -x \"$HOME/.caveman/bin/caveman-mcp\" ]",
-      "install": "cd \"$HOME\" && npm install -g --silent @caveman-ai/cli@4.1.0 </dev/null && cave setup --yes </dev/null"
+      "kind": "plugin",
+      "name": "context7@claude-plugins-official",
+      "source": "anthropics/claude-plugins-official",
+      "agent": "claude-code"
     },
     {
       "kind": "release",
@@ -98,43 +59,43 @@
           "sha256": "c4c036fbf181fc55ef329786c8c17e0d427972b053b825944d968a6aafef1ba4"
         }
       }
+    }
+  ],
+  "retired": [
+    {
+      "name": "ponytail",
+      "present": "jq -e \".plugins[\\\"ponytail@ponytail\\\"]\" \"$HOME/.claude/plugins/installed_plugins.json\" || grep -qF \"[plugins.\\\"ponytail@ponytail\\\"]\" \"$HOME/.codex/config.toml\"",
+      "remove": "claude plugin uninstall ponytail@ponytail; claude plugin marketplace remove ponytail; codex plugin remove ponytail@ponytail; codex plugin marketplace remove ponytail"
     },
     {
-      "kind": "release",
+      "name": "caveman",
+      "present": "command -v cave || jq -e \".mcpServers.caveman\" \"$HOME/.claude.json\"",
+      "remove": "if command -v cave >/dev/null; then cave disable claude; cave disable codex; fi; claude mcp remove caveman -s user; npm uninstall -g @caveman-ai/cli"
+    },
+    {
+      "name": "superpowers",
+      "present": "jq -e \".plugins[\\\"superpowers@claude-plugins-official\\\"]\" \"$HOME/.claude/plugins/installed_plugins.json\"",
+      "remove": "claude plugin uninstall superpowers@claude-plugins-official"
+    },
+    {
       "name": "gentle-ai",
-      "repo": "Gentleman-Programming/gentle-ai",
-      "version": "4.4.0",
-      "assets": {
-        "darwin-arm64": {
-          "file": "gentle-ai_4.4.0_darwin_arm64.tar.gz",
-          "sha256": "b6e00957eb81115f18e33197ae2035f75812a624c6d53e72826ecf7b4a635539"
-        },
-        "darwin-x86_64": {
-          "file": "gentle-ai_4.4.0_darwin_amd64.tar.gz",
-          "sha256": "95686ea30615516aa29ebb6257227b1cdd4c67649dff63ec7adb576ca26a678d"
-        },
-        "linux-aarch64": {
-          "file": "gentle-ai_4.4.0_linux_arm64.tar.gz",
-          "sha256": "2d8874464cbe54b66a77d7c9fe66ce577933de00936ed1a035c81de6406a95fc"
-        },
-        "linux-x86_64": {
-          "file": "gentle-ai_4.4.0_linux_amd64.tar.gz",
-          "sha256": "1f72ca13b32e87cb7f65b29e7fae6df4490b53d69d4763cdf23e944165880cd6"
-        }
-      }
+      "present": "gentle_ai_left",
+      "remove": "retire_gentle_ai"
     },
     {
-      "kind": "command",
-      "name": "gentle-ai config",
-      "writesRules": true,
-      "present": "gentle_ai_configured",
-      "install": "gentle-ai install --agent {agents:gentleAi} --component persona,engram,skills --persona gentleman --skill go-testing,gentle-ai-bench,skill-creator,skill-improver,judgment-day,skill-registry,chained-pr,cognitive-doc-design,comment-writer,work-unit-commits,rdd-defect-workflow,systemic-issue-triage"
+      "name": "impeccable",
+      "present": "impeccable_left",
+      "remove": "retire_impeccable"
     },
     {
-      "kind": "command",
-      "name": "gentle-ai telemetry off",
-      "present": "! command -v gentle-ai >/dev/null || [ \"$(gentle-ai telemetry status --json 2>/dev/null | jq -r .enabled)\" = false ]",
-      "install": "gentle-ai telemetry disable"
+      "name": "shared skills",
+      "present": "skill_list_left",
+      "remove": "retire_skill_list"
+    },
+    {
+      "name": "global jb rules and hooks",
+      "present": "jb_global_left",
+      "remove": "retire_jb_global"
     }
   ]
 }

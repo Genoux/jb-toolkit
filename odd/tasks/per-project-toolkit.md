@@ -1,0 +1,31 @@
+# per-project-toolkit
+
+Objective: jb-toolkit installs into each project (CLI, agent hooks, skills, CI), nothing global but tools; built like ib-toolkit, kept separate from it.
+Branch: chore/drop-ponytail-caveman (fresh-start work not committed yet). Delivery: ask-on-risk. Test runner: scripts/check.
+
+## Specs
+
+- S1 Per project: "jb should be per proejct now." Nothing that tells the agent how to work is installed globally; `jb install` keeps tools only.
+- S2 Stack: "stack ok" — stays multi-stack (rust, js, static, none), bash + jq.
+- S3 CI: "jb should also have reusable ci workflow, etc" — a reusable `Genoux/jb-toolkit/.github/workflows/verify.yml` (scripts/check, jb check, secret scan) that each project's `ci.yml` calls. jb-toolkit is public (owner, 2026-11-21: "i can be public its fine").
+- S4 Skills: "skills should be similar" — ib-toolkit's shape: `.agents/skills/<name>/` per project, linked into `.claude/skills/<name>` (copied where links fail), shared external skills fetched at sync time and never committed; a project's own skill with the same name wins. impeccable is the one UI authority, only for UI stacks.
+- S5 Separate: "they should be similar in their own proejct no same point, these to toolkit are separate even if they look similar. i want one for my perosnal proejct and one for the job" — jb keeps its own rules, its own skill list (no longer ib-toolkit's `external-skills.txt`) and its own checks; nothing points from one toolkit to the other.
+- S6 Check: "check; use same approche?" — like `ib check`: `jb check` runs in CI through the reusable workflow (`--ci`), and locally through the project's session hook; the stop hook keeps running `scripts/check`.
+
+## Tasks
+
+- [x] T1 S5 S4: jb's own skill list (`skills.txt`) and `jb sync` installing it per project by stack, impeccable for UI stacks; drop the ib-toolkit URL. Route: inline. Tests with the code, then mutation-checked (dropping `sync_skills` -> "sync did not install impeccable into a static project"; dropping the self-ignore -> "listed skills would be committed"); scripts/check passed. Uncommitted.
+- [x] T2 S3 S6: reusable `verify.yml` in jb-toolkit; `templates/project/.github/workflows/ci.yml` calls it. Route: inline. RED ("jb-toolkit has no reusable .github/workflows/verify.yml") then GREEN (scripts/check passed), actionlint clean; first real run pending a push. Uncommitted.
+- [ ] T3 S1 S6: `jb sync` copies the CLI into the project and wires project-level agent hooks; `jb install` stops writing global rules and hooks. Route: delegated (context backstop: parent session past ~150k), one writer. Done, uncommitted: RED "install linked the toolkit's skills globally" then GREEN; per-rule RED by breaking each behavior; differential check clean; parent spot check: scripts/check passed, temp sync wired 3 Claude hooks to .toolkit/bin/jb, vendored copy refuses sync. Independent verifier: item 3 passed every probe; item 1 had 3 blockers (B1 unclosed gentle-ai block deleted the rest of the file, B2 `cat -s` squeezed owner blank lines, B3 process substitution raced the removals), fixed in one batch with regression tests (RED: "retiring gentle-ai changed a rules file whose block has no end marker", then GREEN).
+- [ ] T4 S1: re-sync the adopted projects (noted, offhand, signal, squiggle, live-cam, monotub, overview); one PR per project, owner merges. Route: per project.
+
+## Log
+
+- L1 (2026-11-21, owner): "jb should be per proejct now. stack ok, jb should also have reusable ci workflow, etc, skills should be similar, rules for agents; not sure here (they should be similar in their own proejct no same point, these to toolkit are separate even if they look similar. i want one for my perosnal proejct and one for the job), check; use same approche?"
+- L2 (2026-11-21): gitleaks 8.30.1 over all 40 commits found no leaks; repo made public. Public consumers (noted, offhand, signal, squiggle) could not call a private reusable workflow.
+- L3: ib-toolkit's shape, from its own session: `ib sync` writes skills into `.agents/skills/<name>/`, links each into `.claude/skills/<name>`; shared skills fetched per app, never committed; toolkit-owned skills ship in the template; rules via `AGENTS.md`, `CLAUDE.md` = `@AGENTS.md`.
+- L4 (T2): `jb check --ci` skips core.hooksPath and `.claude/settings.json` (machine-only, R3.4); a `ci.yml` calling `verify.yml` counts as running scripts/check. gitleaks 8.30.1 linux_x64 sha256 checked against the release's checksums.txt.
+- L5 (T1): per-stack lists live in `templates/stacks/<stack>/skills.txt` and `skill-commands`; no stack lists a git skill yet (fresh start), js and static run impeccable's `--project --no-hooks` install. State file in the git dir; `jb check` warns locally, `--ci` skips.
+- L6 (T3): vendored `.toolkit/bin/jb`; project hooks for Claude Code, Codex (`.codex/hooks.json`, trusted projects, git-root path) and Cursor; Gemini not wired (`.gemini/` not gitignored by the managed block), Copilot not wired (`.github/hooks` is committed). jb's four skills go into every project. Unadopted repos no longer get a session prompt (follows from S1). VERSION 0.8.0 (R0.2 text changed).
+- L7 (2026-11-21): S6 corrected: "locally through git hooks" was the parent's wording, not the owner's; the owner asked only "check; use same approche?". Verifier advisories left open: impeccable retire deletes `<agent>/skills/impeccable` without a marker check; empty hook event arrays are dropped; gentle-ai markers with digits/CRLF are never stripped.
+- L8 (2026-11-21, owner): "bor just finish all. dont let any 'left over'" and, on Gemini CLI, "remove it i  dont use it". Gemini removed from the agents, adapters, tests and docs; ~/.gemini/gentle-ai archived. Verifier advisories closed with tests: impeccable retire keeps a folder without its `scripts/` engine, empty hook lists the owner had stay, gentle-ai markers with digits/underscore/CRLF are stripped, a jb hook in a JSONC hooks file is reported and the file left byte-identical. scripts/check passed.
