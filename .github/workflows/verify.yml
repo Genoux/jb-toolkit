@@ -4,11 +4,17 @@ name: Verify (reusable)
 #   jobs:
 #     verify:
 #       uses: Genoux/jb-toolkit/.github/workflows/verify.yml@main
+# A project whose own job builds (system libraries, a macOS runner) keeps it
+# and adds this one with `with: { scripts-check: false }`.
 # jb-toolkit is public because a public project cannot call a reusable
 # workflow kept in a private repository.
 on:
   workflow_call:
     inputs:
+      scripts-check:
+        description: Run scripts/check here; false when the project's own CI job builds and runs it (system libraries, other runners)
+        type: boolean
+        default: true
       toolkit-ref:
         description: jb-toolkit ref whose `jb check` runs; follows the workflow's own @main by default
         type: string
@@ -28,23 +34,24 @@ jobs:
         with:
           fetch-depth: 0
 
-      - if: hashFiles('Cargo.toml') != ''
+      - if: inputs.scripts-check && hashFiles('Cargo.toml') != ''
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - if: hashFiles('Cargo.toml') != ''
+      - if: inputs.scripts-check && hashFiles('Cargo.toml') != ''
         uses: Swatinem/rust-cache@v2
 
-      - if: hashFiles('bun.lock', 'bun.lockb') != ''
+      - if: inputs.scripts-check && hashFiles('bun.lock', 'bun.lockb') != ''
         uses: oven-sh/setup-bun@v2
-      - if: hashFiles('package.json') != '' && hashFiles('bun.lock', 'bun.lockb') == ''
+      - if: inputs.scripts-check && hashFiles('package.json') != '' && hashFiles('bun.lock', 'bun.lockb') == ''
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
-      - if: hashFiles('pnpm-lock.yaml') != ''
+      - if: inputs.scripts-check && hashFiles('pnpm-lock.yaml') != ''
         run: corepack enable
 
       - name: Check
+        if: inputs.scripts-check
         run: scripts/check
 
       - uses: actions/checkout@v4

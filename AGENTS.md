@@ -28,6 +28,8 @@ is about changing the toolkit itself. Read `PRODUCT.md` first.
 - `.github/workflows/verify.yml` — the reusable CI every project's `ci.yml`
   calls: `scripts/check`, `jb check --ci`, gitleaks. The repo is public so
   public projects can call it.
+  A project whose own CI job builds (system libraries, a macOS runner)
+  keeps that job and calls this one with `scripts-check: false`.
 - `templates/managed/` — overwritten in projects by `jb sync`.
 - `templates/project/` — created once in a project, then the project's.
 - `templates/stacks/<stack>/` — starting `scripts/check` and `.gitignore` lines,

@@ -830,6 +830,7 @@ grep -q 'workflow_call:' "$verify" || fail "verify.yml is not a reusable workflo
 grep -q 'run: scripts/check' "$verify" || fail "verify.yml does not run scripts/check"
 grep -q 'jb check --ci' "$verify" || fail "verify.yml does not run jb check --ci"
 grep -q 'gitleaks' "$verify" || fail "verify.yml has no secret scan"
+grep -q 'scripts-check:' "$verify" && grep -q "if: inputs.scripts-check" "$verify" || fail "verify.yml cannot skip scripts/check for a project whose own CI job builds it"
 grep -q 'uses: Genoux/jb-toolkit/.github/workflows/verify.yml@main' "$root/templates/project/.github/workflows/ci.yml" || fail "the project ci.yml template does not call verify.yml"
 new_repo ciproj && cd "$tmp/ciproj"
 out=$("$root/bin/jb" check 2>&1) || true
