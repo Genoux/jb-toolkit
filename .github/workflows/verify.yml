@@ -1,0 +1,100 @@
+name: Verify (reusable)
+
+# Called from each project's ci.yml (templates/project/.github/workflows/ci.yml):
+#   jobs:
+#     verify:
+#       uses: Genoux/jb-toolkit/.github/workflows/verify.yml@main
+# jb-toolkit is public because a public project cannot call a reusable
+# workflow kept in a private repository.
+on:
+  workflow_call:
+    inputs:
+      toolkit-ref:
+        description: jb-toolkit ref whose `jb check` runs; follows the workflow's own @main by default
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: scripts/check and jb check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Full history: jb check reads commit headers and attribution lines (R3).
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - if: hashFiles('Cargo.toml') != ''
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - if: hashFiles('Cargo.toml') != ''
+        uses: Swatinem/rust-cache@v2
+
+      - if: hashFiles('bun.lock', 'bun.lockb') != ''
+        uses: oven-sh/setup-bun@v2
+      - if: hashFiles('package.json') != '' && hashFiles('bun.lock', 'bun.lockb') == ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - if: hashFiles('pnpm-lock.yaml') != ''
+        run: corepack enable
+
+      - name: Check
+        run: scripts/check
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Genoux/jb-toolkit
+          ref: ${{ inputs.toolkit-ref }}
+          path: .jb-toolkit-ci
+
+      # --ci skips what only exists on a machine: core.hooksPath and the
+      # untracked .claude/settings.json (R3.4).
+      - name: Standard
+        run: .jb-toolkit-ci/bin/jb check --ci .
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The MIT CLI, not gitleaks-action: the action needs a GITLEAKS_LICENSE
+      # secret for organization repositories (gitleaks-action README, "License").
+      - name: Install gitleaks
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check
+          tar -xzf "${archive}" -C "${RUNNER_TEMP}" gitleaks
+
+      # The event's commits; a first push or a force push scans everything.
+      - name: Scan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.sha }}
+        run: |
+          commit_range=""
+          case "${EVENT_NAME}" in
+            pull_request) commit_range="${PR_BASE_SHA}..${PR_HEAD_SHA}" ;;
+            push) commit_range="${PUSH_BEFORE_SHA}..${PUSH_AFTER_SHA}" ;;
+          esac
+          if [ -n "${commit_range}" ] && git rev-parse --quiet --verify "${commit_range%%..*}^{commit}" >/dev/null; then
+            "${RUNNER_TEMP}/gitleaks" git --redact --no-banner --log-opts="${commit_range}"
+          else
+            "${RUNNER_TEMP}/gitleaks" git --redact --no-banner
+          fi

@@ -7,32 +7,37 @@ commit only when asked). Stack and UI stay free per project.
 **The owner runs one command, once per machine. The agent does everything else.**
 
 ```sh
-~/Desktop/@john/jb-toolkit/bin/jb install
+~/Projects/john/jb-toolkit/bin/jb install
 ```
 
 After that, you pitch and decide; agents scaffold, adopt, fix drift, release
-and demo by themselves. Install wires these into every agent in `kit.json` › `agents` that is installed
-(Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot CLI, opencode: what each
-really supports is in the table in `AGENTS.md`). For Claude Code that is:
+and demo by themselves. Install is tools only: it links `jb` into
+`~/.local/bin`, imports your own `personal.md` into each agent's rules file,
+adds the baseline kit and removes what the kit retired (the global rules,
+hooks and skill links older installs wrote included). Everything that tells
+an agent how to work lives in each project, written by `jb new` and `jb sync`
+for every agent in `kit.json` › `agents` that documents it (what each really
+supports is in the table in `AGENTS.md`). For Claude Code that is:
 
 | What | Where | Effect |
 |---|---|---|
-| `RULES.md` | imported from `~/.claude/CLAUDE.md` | every session, in any folder, knows the standard (R0 tells the agent it runs the toolkit) |
-| Session hook | `SessionStart` in `~/.claude/settings.json` | in a project, runs `jb session`: silent when the project is clean; otherwise lists what to fix, or says the project is not adopted yet |
+| `RULES.md` | `.toolkit/RULES.md`, pointed to by the project's `AGENTS.md` (`CLAUDE.md` imports it) | every session in the project knows the standard (R0 tells the agent it runs the toolkit) |
+| `jb` (project copy) | `.toolkit/bin/jb` | what the project's hooks run: the version the project was synced at, with no global install needed |
+| Session hook | `SessionStart` in `.claude/settings.json` | runs `jb session`: silent when the project is clean; otherwise lists what to fix |
 | Guard hook | `PreToolUse` (Bash) | `jb guard` refuses `--no-verify`, `commit -n`, `core.hooksPath` changes and `HUSKY=0`/`LEFTHOOK=0`/`SKIP=` on git commands |
 | Stop hook | `Stop` | `jb stop` runs `scripts/check` when the tree has changes and sends the agent back to work if it fails; honors `stop_hook_active`, silent otherwise |
-| Skills | `~/.claude/skills/jb-*` | `jb-new-project` (you pitch → it scaffolds), `jb-adopt` (existing repo → standard, in a worktree), `jb-release` (you say "release" → bump, PR, tag, draft), `jb-demo` (anything to show → local `.demo/*.html`) |
-| Baseline kit | `kit.json` | plugins and tools (pinned) every machine should have, and the shared skills from ib-toolkit's `external-skills.txt` at their latest version; `jb install` adds and refreshes them, `jb session` names what is missing |
+| Skills | `.agents/skills/jb-*`, linked into `.claude/skills` | `jb-new-project` (you pitch → it scaffolds), `jb-adopt` (existing repo → standard, in a worktree), `jb-release` (you say "release" → bump, PR, tag, draft), `jb-demo` (anything to show → local `.demo/*.html`); never committed |
+| Baseline kit | `kit.json` | the few plugins and tools (pinned) every machine should have, no skills, plus `retired` items the kit once installed; `jb install` adds the kit and removes the retired, `jb session` names what is missing or left over |
 | `jb` | `~/.local/bin/jb` | the agent's tool: `new`, `sync`, `check`, `bump`, `tag` |
 
-Then, in every toolkit project, git hooks refuse off-standard commits and
-branches, and `.claude/settings.json` denies the Artifact and Claude Docs
-tools. The rules are enforced, not only written down.
+Then git hooks refuse off-standard commits and branches, and
+`.claude/settings.json` denies the Artifact and Claude Docs tools. The rules
+are enforced, not only written down.
 
-Re-run `jb install` after moving the toolkit; it is idempotent and backs up
-`settings.json` to `settings.json.jb-backup`. Codex gets a pointer to
-`RULES.md` in `~/.codex/AGENTS.md` and the same three hooks in
-`~/.codex/hooks.json`; Codex runs them only after you trust them in `/hooks`.
+Re-run `jb install` after moving the toolkit; it is idempotent. Codex gets the
+same three hooks in the project's `.codex/hooks.json` and Cursor its two in
+`.cursor/hooks.json`; Codex runs them only in a trusted project, after you
+approve them in `/hooks`.
 
 ## Why a scaffold that syncs, not a package
 
@@ -51,7 +56,7 @@ file-level parts (hooks and so on) into each repo.
 You never need these; they are what the agent runs.
 
 ```sh
-jb new hangar --stack js --github   # new project in ~/Desktop/@john (override: JB_PROJECTS or --dir)
+jb new hangar --stack js --github   # new project in ~/Projects/john (override: JB_PROJECTS or --dir)
 jb sync                             # in a project: re-apply managed files, adopt an existing repo
 jb check [path]                     # what departs from RULES.md (read-only)
 jb bump 0.4.0                       # on a branch: set the version, commit "chore: bump version to 0.4.0"
@@ -99,16 +104,17 @@ go in `.jb-exceptions`, one `R<id>: reason` per line.
 
 ## Adopting an existing project
 
-Open a session in it. The hook flags it as not adopted and the agent offers
-to adopt it (RULES.md R0.3) on a `chore/adopt-jb-toolkit` branch. Gramly is
+Ask an agent to adopt it, in that repo or from a session in a toolkit
+project (RULES.md R0.3); a repo that is not adopted has no jb hooks to flag
+it. The agent adopts it on a `chore/adopt-jb-toolkit` branch. Gramly is
 closest already: same hooks idea, same version and tag flow.
 
 ## Changing the standard
 
 Ask an agent to change `RULES.md`, `skills/` or `templates/` and bump
-`VERSION`. Rules and skills apply at once (they are linked, not copied);
-each project's next session sees it is on an older toolkit and the agent
-re-syncs it.
+`VERSION`. Projects hold copies, so a change reaches a project when it is
+re-synced: each project's next session sees it is on an older toolkit than
+the one `jb install` linked, and the agent re-syncs it.
 
 ## What to add next
 
@@ -117,7 +123,7 @@ Ordered by value for the effort:
 1. **Secret scanning**: run `gitleaks protect --staged` in pre-commit when it
    is installed.
 2. **`jb doctor`**: check the machine (gh auth, toolchains, hooksPath in every
-   repo under `~/Desktop/@john`) and report every project's `jb check` in one table.
+   repo under `~/Projects/john`) and report every project's `jb check` in one table.
 3. **Stack recipes** (`templates/stacks/<x>/recipe.md`): the default choices
    for each stack (Next + Bun, Rust CLI/daemon, Tauri), so "use the usual"
    means something specific. These are opinions, not mandatory.
