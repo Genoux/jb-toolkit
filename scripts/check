@@ -19,17 +19,10 @@ contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 export HOME=$tmp/home0 JB_KIT=$tmp/empty-kit.json JB_ALLOW_WORKTREE=1 JB_PROJECTS=$tmp/no-projects
 mkdir -p "$HOME" && echo '{"agents":[{"id":"claude-code"},{"id":"codex"},{"id":"cursor"},{"id":"github-copilot"},{"id":"opencode"}],"items":[]}' > "$JB_KIT"
 export GIT_AUTHOR_NAME=check GIT_AUTHOR_EMAIL=check@localhost GIT_COMMITTER_NAME=check GIT_COMMITTER_EMAIL=check@localhost
-# a fake npx for the whole run: impeccable's project install, offline
-mkdir -p "$tmp/npxbin" && printf '#!/bin/sh
-echo "npx $*" >> "%s/npx.log"
-case "$*" in *impeccable*--project*) mkdir -p .agents/skills/impeccable .claude/skills/impeccable && echo imp > .agents/skills/impeccable/SKILL.md && echo imp > .claude/skills/impeccable/SKILL.md ;; esac
-' "$tmp" > "$tmp/npxbin/npx" && chmod +x "$tmp/npxbin/npx"
-export PATH="$tmp/npxbin:$PATH"
 JB_PROJECTS=$tmp "$root/bin/jb" new smoke --stack static >/dev/null
 cd "$tmp/smoke"
-# a UI stack gets impeccable in the project, marked as jb's and never committed
-[ -f .agents/skills/impeccable/SKILL.md ] && [ -f .agents/skills/impeccable/.toolkit-source ] || { echo "sync did not install impeccable into a static project" >&2; exit 1; }
-contains "$(cat "$tmp/npx.log")" 'impeccable@4.8.0 install --project --yes --no-hooks' || { echo "impeccable not installed per project without hooks" >&2; exit 1; }
+# jb's own skills land in the project, marked as jb's and never committed
+[ -f .agents/skills/jb-release/SKILL.md ] && [ -f .agents/skills/jb-release/.toolkit-source ] || { echo "sync did not install jb's skills" >&2; exit 1; }
 [ -z "$(git status --porcelain --untracked-files=all .agents)" ] || { echo "the installed skill would be committed" >&2; exit 1; }
 "$root/bin/jb" check >/dev/null || { "$root/bin/jb" check; exit 1; }
 session() { JB_PROJECTS=$tmp "$root/bin/jb" session; }
@@ -108,58 +101,40 @@ foreign='{"hooks":[{"type":"command","command":"rtk hook claude"}]}'
 stale='{"hooks":[{"type":"command","command":"/old/place/bin/jb guard"}]}'
 jq -n --argjson f "$foreign" --argjson s "$stale" '{hooks: {PreToolUse: [($f + {matcher: "Bash"}), ($s + {matcher: "Bash"})], Stop: [$f]}}' > "$home/.claude/settings.json"
 jq -n --argjson f "$foreign" '{hooks: {Stop: [$f]}}' > "$home/.codex/hooks.json"
-# fake claude and npx: record the calls, touch no network, and drain stdin like the real tools do
-for shim in claude npx; do printf '#!/bin/sh\necho "%s $*" >> "$HOME/shim.log"\n[ -t 0 ] || cat >/dev/null\n' "$shim" > "$tmp/shims/$shim"; chmod +x "$tmp/shims/$shim"; done
-# a local repo stands in for GitHub, so the skill list installs offline
-up=$tmp/upstream && mkdir -p "$up/skills/alpha/references" "$up/skills/beta" "$up/agents"
-printf -- '---\nname: alpha\n---\n' > "$up/skills/alpha/SKILL.md"; echo ref > "$up/skills/alpha/references/r.md"
-printf -- '---\nname: beta\n---\n' > "$up/skills/beta/SKILL.md"
-printf -- '---\nname: helper\n---\n' > "$up/agents/helper.md"
-git -C "$up" init -q -b main && git -C "$up" add -A && git -C "$up" -c core.hooksPath=/dev/null commit -q -m init
-printf '# test list\nfile://%s skills/*\nfile://%s agents/helper.md\n' "$up" "$up" > "$tmp/skills.txt"
+# fake claude: record the calls, touch no network, and drain stdin like the real tools do
+printf '#!/bin/sh\necho "claude $*" >> "$HOME/shim.log"\n[ -t 0 ] || cat >/dev/null\n' > "$tmp/shims/claude"; chmod +x "$tmp/shims/claude"
 cat > "$tmp/kit.json" <<KIT
 {
   "agents": [
-    { "id": "claude-code", "tool": "cc" },
-    { "id": "codex", "tool": "cx" },
+    { "id": "claude-code" },
+    { "id": "codex" },
     { "id": "ghost-agent" }
   ],
   "items": [
     { "kind": "plugin", "name": "demo@demo-market", "source": "owner/demo-market" },
-    { "kind": "command", "name": "agents-tool", "present": "[ -e \\"\$HOME/agents-seen\\" ]", "install": "echo {agents:tool} > \\"\$HOME/agents-seen\\"" },
     { "kind": "command", "name": "auto-tool", "present": "[ -e \\"\$HOME/auto-tool\\" ]", "install": "touch \\"\$HOME/auto-tool\\"" },
     {
       "kind": "release", "name": "rtk-fake", "repo": "o/r", "version": "1.0.0",
       "assets": { "PLATFORM": { "file": "rtk-fake.tar.gz", "sha256": "SHA" } },
       "after": "rtk-fake init -g --auto-patch"
     }
-  ],
-  "retired": [
-    { "name": "old-tool", "present": "[ -e \\"\$HOME/old-tool\\" ]", "remove": "rm \\"\$HOME/old-tool\\"" },
-    { "name": "stuck-tool", "present": "[ -e \\"\$HOME/stuck-tool\\" ]", "remove": "true" }
   ]
 }
 KIT
 platform="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
-mkdir -p "$tmp/asset" && printf '#!/bin/sh\nif [ "$1" = --version ]; then echo "probe update-guard=${GENTLE_AI_NO_SELF_UPDATE:-unset}" >> "$HOME/shim.log"; echo "rtk-fake 1.0.0"; else echo "rtk-fake $* update-guard=${GENTLE_AI_NO_SELF_UPDATE:-unset}" >> "$HOME/shim.log"; fi\n' > "$tmp/asset/rtk-fake" && chmod +x "$tmp/asset/rtk-fake"
+mkdir -p "$tmp/asset" && printf '#!/bin/sh\nif [ "$1" = --version ]; then echo "rtk-fake 1.0.0"; else echo "rtk-fake $*" >> "$HOME/shim.log"; fi\n' > "$tmp/asset/rtk-fake" && chmod +x "$tmp/asset/rtk-fake"
 tar czf "$tmp/rtk-fake.tar.gz" -C "$tmp/asset" rtk-fake
 asset_sha=$(if command -v sha256sum >/dev/null; then sha256sum "$tmp/rtk-fake.tar.gz"; else shasum -a 256 "$tmp/rtk-fake.tar.gz"; fi | cut -d' ' -f1)
 set_sha() { jq --arg p "$platform" --arg s "$1" '(.items[] | select(.kind == "release").assets) |= with_entries(.key = $p | .value.sha256 = $s)' "$tmp/kit.json" > "$tmp/kit.new" && mv "$tmp/kit.new" "$tmp/kit.json"; }
 set_sha "$asset_sha"
 printf '#!/bin/sh\nout=; while [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; url=$1; shift; done\necho "curl $url" >> "$HOME/shim.log"; cp "%s" "$out"\n' "$tmp/rtk-fake.tar.gz" > "$tmp/shims/curl"; chmod +x "$tmp/shims/curl"
 export JB_KIT=$tmp/kit.json
-touch "$home/old-tool" "$home/stuck-tool"
 missing=$(HOME=$home "$root/bin/jb" session)
-contains "$missing" 'retired kit items: old-tool, stuck-tool' || { echo "session does not list retired kit items still on the machine" >&2; exit 1; }
-for name in demo@demo-market auto-tool agents-tool rtk-fake; do
+for name in demo@demo-market auto-tool rtk-fake; do
   contains "$missing" "$name" || { echo "session does not list missing kit item $name" >&2; exit 1; }
 done
 install() { HOME=$home PATH="$tmp/shims:$PATH" "$root/bin/jb" install 2>&1; }
 out=$(install); install >/dev/null
-[ ! -e "$home/old-tool" ] || { echo "kit: install did not remove a retired item" >&2; exit 1; }
-contains "$out" 'kit: removed old-tool' || { echo "kit: install did not say it removed a retired item" >&2; exit 1; }
-contains "$out" 'kit: could not remove stuck-tool' || { echo "kit: a retired item that survives its remove step is not reported" >&2; exit 1; }
-rm "$home/stuck-tool"
 [ -L "$home/.claude/CLAUDE.md" ] || { echo "install replaced a symlinked CLAUDE.md" >&2; exit 1; }
 [ "$(cat "$tmp/dotfiles/CLAUDE.md")" = "# my rules" ] || { echo "install wrote through a symlinked CLAUDE.md into the dotfiles" >&2; exit 1; }
 [ ! -e "$home/.claude/skills" ] && [ ! -e "$home/.agents/skills/jb-adopt" ] || { echo "install linked the toolkit's skills globally" >&2; exit 1; }
@@ -173,8 +148,7 @@ for settings in "$home/.claude/settings.json" "$home/.codex/hooks.json"; do
 done
 [ "$(hook_count "$home/.claude/settings.json" PreToolUse 'rtk hook')" = 1 ] || { echo "install dropped a foreign PreToolUse hook" >&2; exit 1; }
 contains "$out" 'wired' && { echo "install still says it wired agent hooks: $out" >&2; exit 1; }
-# agents come from kit.json: one present in the kit and on disk is wired, others are skipped
-[ "$(cat "$home/agents-seen")" = "cc,cx" ] || { echo "kit: {agents:tool} is not the present agents' ids for that tool" >&2; exit 1; }
+# an agent in kit.json that is not installed is skipped
 [ ! -e "$home/.ghost-agent" ] || { echo "install created a directory for an agent that is not installed" >&2; exit 1; }
 noagent=$tmp/home-noagent && mkdir -p "$noagent/.claude"
 HOME=$noagent PATH="$tmp/shims:$PATH" "$root/bin/jb" install >/dev/null 2>&1
@@ -213,18 +187,17 @@ for rules in .claude/CLAUDE.md .codex/AGENTS.md .copilot/copilot-instructions.md
 done
 [ ! -e "$every/.cursor/rules" ] && [ -z "$(find "$every/.cursor" -type f \( -name AGENTS.md -o -name CLAUDE.md \))" ] || { echo "cursor: has no user-level rules file, none should be written" >&2; exit 1; }
 
-# kit: plugins and skills through their CLIs, commands run unless manual
+# kit: plugins through their CLI, commands and releases run
 grep -qF 'claude plugin marketplace add owner/demo-market' "$home/shim.log" || { echo "kit: marketplace not added" >&2; exit 1; }
 grep -qF 'claude plugin install demo@demo-market' "$home/shim.log" || { echo "kit: plugin not installed" >&2; exit 1; }
 [ -e "$home/auto-tool" ] || { echo "kit: command item not run" >&2; exit 1; }
 grep -qF 'curl https://github.com/o/r/releases/download/v1.0.0/rtk-fake.tar.gz' "$home/shim.log" || { echo "kit: release asset not fetched from the pinned tag" >&2; exit 1; }
 [ -x "$home/.local/bin/rtk-fake" ] || { echo "kit: release binary not placed in ~/.local/bin" >&2; exit 1; }
-grep -qF 'rtk-fake init -g --auto-patch update-guard=1' "$home/shim.log" || { echo "kit: release after-step not run with gentle-ai self-update disabled" >&2; exit 1; }
-if grep -q 'probe update-guard=unset' "$home/shim.log"; then echo "kit: a version probe could self-update the tool" >&2; exit 1; fi
+grep -qF 'rtk-fake init -g --auto-patch' "$home/shim.log" || { echo "kit: release after-step not run" >&2; exit 1; }
 # a second install finds everything present at its pin and fetches nothing
 : > "$home/shim.log"
 export JB_KIT=$tmp/kit.json
-for item in auto-tool rtk-fake retired; do
+for item in auto-tool rtk-fake; do
   still=$(HOME=$home "$root/bin/jb" session); contains "$still" "$item" && { echo "kit: $item reported missing after install" >&2; exit 1; }
 done
 HOME=$home PATH="$tmp/shims:$PATH" "$root/bin/jb" install >/dev/null 2>&1
@@ -241,7 +214,7 @@ failhome=$tmp/home-fail && mkdir -p "$failhome/.claude"
 failout=$(JB_KIT=$tmp/kit-failing.json HOME=$failhome PATH="$tmp/shims:$PATH" "$root/bin/jb" install 2>&1)
 contains "$failout" 'refusing-to-read-symlink' || { echo "kit: a failing setup step hides the tool's reason" >&2; exit 1; }
 export JB_KIT=$tmp/empty-kit.json
-# tools that refuse symlinked config (gentle-ai) run against a materialized copy that is written back
+# tools that refuse symlinked config run against a materialized copy that is written back
 mat=$tmp/home-mat && mkdir -p "$mat/.claude" "$tmp/dot3" && echo '{"keep":1}' > "$tmp/dot3/settings.json"
 ln -s "$tmp/dot3/settings.json" "$mat/.claude/settings.json"
 printf '%s' '{"agents":[{"id":"claude-code"}],"items":[{"kind":"command","name":"edits-settings","present":"false","install":"[ ! -L \"$HOME/.claude/settings.json\" ] && jq \".touched = true\" \"$HOME/.claude/settings.json\" > \"$HOME/.claude/s.tmp\" && mv \"$HOME/.claude/s.tmp\" \"$HOME/.claude/settings.json\""}]}' > "$tmp/kit-mat.json"
@@ -617,67 +590,6 @@ git commit -n -m x'
 guard_blocks 'echo $((1<<n))
 git commit -n -m x'
 
-# skill list: the owner's own folders stay, skills-CLI copies are taken over,
-# a delisted skill goes, a failed download removes nothing, a deleted skill or
-# skills per project: a stack's list lands in .agents/skills, linked into
-# .claude/skills, never committed; a delisted skill goes, a failed download
-# removes nothing, the project's own skills stay, and check reports staleness
-tk=$tmp/toolkit-copy && rm -rf "$tk" && mkdir -p "$tk" && cp -R "$root/bin" "$root/templates" "$root/VERSION" "$root/RULES.md" "$root/kit.json" "$tk/"
-list=$tk/templates/stacks/none/skills.txt; : > "$tk/templates/stacks/none/skill-commands"
-printf 'file://%s skills/*\nfile://%s agents/helper.md\n' "$up" "$up" > "$list"
-sk=$tmp/skillproj && rm -rf "$sk" && mkdir -p "$sk/.claude/skills/beta" "$sk/.agents/skills/mine" && git -C "$sk" init -q
-echo mine > "$sk/.claude/skills/beta/SKILL.md"; echo mine > "$sk/.agents/skills/mine/SKILL.md"
-sk_jb() { ( cd "$sk" && "$tk/bin/jb" "$@" ); }
-sk_jb sync --stack none >/dev/null 2>&1
-for s in alpha beta helper; do [ -f "$sk/.agents/skills/$s/SKILL.md" ] || fail "sync did not install listed skill $s into the project"; done
-[ -L "$sk/.claude/skills/alpha" ] && [ "$(cat "$sk/.claude/skills/alpha/references/r.md")" = ref ] || fail "a listed skill is not linked into .claude/skills"
-[ "$(cat "$sk/.claude/skills/beta/SKILL.md")" = mine ] || fail "sync replaced the project's own Claude skill"
-[ "$(cat "$sk/.agents/skills/mine/SKILL.md")" = mine ] || fail "sync touched the project's own skill"
-[ "$(git -C "$sk" status --porcelain --untracked-files=all .agents)" = "?? .agents/skills/mine/SKILL.md" ] || fail "listed skills would be committed: $(git -C "$sk" status --porcelain .agents)"
-case "$(sk_jb check 2>&1)" in *"skills missing"*) fail "check reports skills right after sync" ;; esac
-printf 'file://%s skills/alpha\nfile://%s/missing skills/x\n' "$up" "$tmp" > "$list"
-sk_jb sync --stack none >/dev/null 2>&1
-[ -f "$sk/.agents/skills/beta/SKILL.md" ] || fail "a failed download removed a skill"
-printf 'file://%s skills/alpha\nfile://%s skills/moved-away\n' "$up" "$up" > "$list"
-moved_out=$(sk_jb sync --stack none 2>&1)
-contains "$moved_out" "no skill at skills/moved-away" || fail "a moved skill was not named by its path: $moved_out"
-case $moved_out in *offline*) fail "a moved skill was blamed on the network: $moved_out" ;; esac
-printf 'file://%s skills/alpha\n' "$up" > "$list"
-sk_jb sync --stack none >/dev/null 2>&1
-[ ! -e "$sk/.agents/skills/beta" ] && [ ! -e "$sk/.agents/skills/helper" ] && [ ! -e "$sk/.claude/skills/helper" ] || fail "a skill that left the list was kept"
-[ -f "$sk/.agents/skills/mine/SKILL.md" ] || fail "removing delisted skills removed the project's own"
-rm -rf "$sk/.agents/skills/alpha"
-contains "$(sk_jb check 2>&1)" "skills missing" || fail "check does not report a deleted listed skill"
-sk_jb sync --stack none >/dev/null 2>&1; touch -t 202001010000 "$(git -C "$sk" rev-parse --absolute-git-dir)/jb-skill-list"
-contains "$(sk_jb check 2>&1)" "skills missing" || fail "check does not report a week-old skill install"
-case "$(sk_jb check --ci 2>&1)" in *"skills missing"*) fail "check --ci reports skills CI never installs" ;; esac
-
-# the shipped kit's retired gentle-ai, impeccable and shared skills leave only the owner's own behind
-rh=$(fresh_home retire); mkdir -p "$rh/.local/bin" "$rh/.claude/skills/impeccable" "$rh/.agents/skills/impeccable" "$rh/.claude/skills/own" "$rh/.agents/skills/listed"
-printf '#!/bin/sh\necho "gentle-ai $*" >> "$HOME/ga.log"\n' > "$rh/.local/bin/gentle-ai"; chmod +x "$rh/.local/bin/gentle-ai"
-printf '%s\n' '@~/.claude/personal.md' '' '<!-- gentle-ai:persona -->' 'persona' '<!-- /gentle-ai:persona -->' '' \
-  '<!-- gentle-ai:agent-routing -->' 'routing' '<!-- gentle-ai:remote-authorization -->' 'remote' '<!-- /gentle-ai:remote-authorization -->' \
-  '<!-- /gentle-ai:agent-routing -->' '' '# mine' > "$rh/.claude/CLAUDE.md"
-for d in "$rh/.claude/skills/impeccable" "$rh/.agents/skills/impeccable"; do mkdir -p "$d/scripts" && echo x > "$d/SKILL.md" && echo engine > "$d/scripts/impeccable"; done; echo own > "$rh/.claude/skills/own/SKILL.md"
-echo x > "$rh/.agents/skills/listed/SKILL.md"; echo 'repo path sha' > "$rh/.agents/skills/listed/.toolkit-source"; ln -s ../../.agents/skills/listed "$rh/.claude/skills/listed"; echo listed > "$rh/.agents/.jb-skill-list"
-imp="sh $rh/.claude/skills/impeccable/scripts/impeccable hook"
-jq -n --arg i "$imp" '{hooks: {SessionStart: [{hooks: [{type: "command", command: $i}]}, {hooks: [{type: "command", command: "theirs"}]}], Stop: [{hooks: [{type: "command", command: $i}]}]}}' > "$rh/.claude/settings.json"
-jq '{agents: [.agents[0]], items: [], retired: [.retired[] | select(.name == "gentle-ai" or .name == "impeccable" or .name == "shared skills")]}' "$root/kit.json" > "$tmp/kit-retire.json"
-[ "$(jq '.retired | length' "$tmp/kit-retire.json")" = 3 ] || fail "kit.json does not retire gentle-ai, impeccable and the shared skills"
-retire_session() { ( cd "$rh" && git init -q 2>/dev/null; JB_KIT=$tmp/kit-retire.json HOME=$rh "$root/bin/jb" session ); }
-contains "$(retire_session)" 'retired kit items: gentle-ai, impeccable, shared skills' || fail "session does not report the retired gentle-ai, impeccable and shared skills"
-inst_home "$rh" "$tmp/kit-retire.json" >/dev/null
-contains "$(cat "$rh/ga.log" 2>/dev/null)" 'gentle-ai uninstall --all --yes' || fail "retiring gentle-ai did not run its own uninstall"
-[ ! -e "$rh/.local/bin/gentle-ai" ] || fail "retiring gentle-ai left its binary"
-[ "$(sed -n '1p;3p' "$rh/.claude/CLAUDE.md" | paste -sd'|' -)" = '@~/.claude/personal.md|# mine' ] && ! grep -q 'gentle-ai\|routing\|remote' "$rh/.claude/CLAUDE.md" \
-  || fail "retiring gentle-ai did not strip exactly its blocks (nested included): $(cat "$rh/.claude/CLAUDE.md")"
-[ ! -e "$rh/.claude/skills/impeccable" ] && [ ! -e "$rh/.agents/skills/impeccable" ] || fail "retiring impeccable left its skill"
-[ "$(grep -c 'impeccable' "$rh/.claude/settings.json")" = 0 ] || fail "retiring impeccable left its hooks"
-[ "$(hook_count "$rh/.claude/settings.json" SessionStart '^theirs$')" = 1 ] || fail "retiring impeccable dropped a foreign hook"
-[ ! -e "$rh/.agents/skills/listed" ] && [ ! -L "$rh/.claude/skills/listed" ] && [ ! -e "$rh/.agents/.jb-skill-list" ] || fail "retiring the shared skills left a listed skill or its state"
-[ "$(cat "$rh/.claude/skills/own/SKILL.md")" = own ] || fail "retiring the shared skills removed the owner's own skill"
-case "$(retire_session)" in *retired*) fail "retired items still reported after install" ;; esac
-
 # bump rollback restores each lockfile on its own
 bdir=$tmp/bumprust && rm -rf "$bdir" && mkdir -p "$bdir/.toolkit" "$tmp/rustshims" && cd "$bdir" && git init -q -b main && cp "$root/templates/managed/.toolkit/version" .toolkit/
 printf '[package]\nname = "x"\nversion = "0.3.0"\n' > Cargo.toml; echo '# original lock' > Cargo.lock
@@ -707,12 +619,10 @@ start=$(date +%s); slow_out=$(printf '{"cwd":"%s"}' "$bs" | PATH="/usr/bin:/bin"
 [ -z "$slow_out" ] || fail "stop blocked on a check that merely timed out"
 cd "$root"
 
-# kit commands: failures show the tool's last line, and an agent whose CLI is missing is left out
+# a failing kit command shows the tool's last line
 h=$(fresh_home reason)
-printf '%s' '{"agents":[{"id":"claude-code","tool":"a","toolNeeds":"definitely-not-installed-cli"},{"id":"codex","tool":"b"}],"items":[{"kind":"command","name":"fails","present":"false","install":"echo reason-xyz >&2; exit 4"},{"kind":"command","name":"lists","present":"false","install":"echo {agents:tool} > \"$HOME/listed\""}]}' > "$tmp/kit-reason.json"
-out=$(inst_home "$h" "$tmp/kit-reason.json")
-contains "$out" "reason-xyz" || fail "a failing kit command hides its own reason"
-[ "$(cat "$h/listed")" = "b" ] || fail "an agent whose CLI is not on PATH was passed to the tool: $(cat "$h/listed")"
+printf '%s' '{"agents":[{"id":"claude-code"}],"items":[{"kind":"command","name":"fails","present":"false","install":"echo reason-xyz >&2; exit 4"}]}' > "$tmp/kit-reason.json"
+contains "$(inst_home "$h" "$tmp/kit-reason.json")" "reason-xyz" || fail "a failing kit command hides its own reason"
 
 # hook entries keep their place on rerun
 new_repo order2 && cd "$tmp/order2"
@@ -793,36 +703,6 @@ psync >/dev/null
 [ ! -e .agents/skills/jb-gone ] && [ ! -L .claude/skills/jb-gone ] || fail "sync kept a jb skill the toolkit no longer ships"
 cd "$root"
 
-# the retired global jb rules, hooks and skill links leave exactly the owner's own behind
-rg_=$(fresh_home retire-global); mkdir -p "$rg_/.copilot/hooks" "$rg_/.claude/skills/own" "$rg_/.agents/skills" "$rg_/.config/opencode"
-printf '%s\n' '# mine' '' '<!-- >>> jb-toolkit -->' "@$root/RULES.md" '<!-- <<< jb-toolkit -->' '' '<!-- >>> jb-personal -->' '@~/.claude/personal.md' '<!-- <<< jb-personal -->' > "$rg_/.claude/CLAUDE.md"
-printf '%s\n' '<!-- >>> jb-toolkit -->' "Before any work, read $root/RULES.md." '<!-- <<< jb-toolkit -->' '' '# codex own' > "$rg_/.codex/AGENTS.md"
-gj='"$HOME/.local/bin/jb"'
-jq -n --arg s "$gj session" --arg g "$gj guard" --arg t "$gj stop" '{theme: "dark", hooks: {SessionStart: [{hooks: [{type: "command", command: $s}]}, {hooks: [{type: "command", command: "theirs"}]}], PreToolUse: [{matcher: "Bash", hooks: [{type: "command", command: $g}]}], Stop: [{hooks: [{type: "command", command: $t}]}]}}' > "$rg_/.claude/settings.json"
-jq -n --arg s "$gj session" --arg t "$gj stop" '{hooks: {SessionStart: [{hooks: [{type: "command", command: $s}]}], Stop: [{hooks: [{type: "command", command: $t}]}]}}' > "$rg_/.codex/hooks.json"
-jq -n --arg g "$gj guard --agent cursor" '{version: 1, hooks: {beforeShellExecution: [{command: $g}], stop: [{command: "theirs"}]}}' > "$rg_/.cursor/hooks.json"
-jq -n --arg s "$gj session --agent github-copilot" '{version: 1, hooks: {sessionStart: [{type: "command", bash: $s}]}}' > "$rg_/.copilot/hooks/jb-toolkit.json"
-echo '{"hooks":{"sessionStart":[{"type":"command","bash":"theirs"}]}}' > "$rg_/.copilot/hooks/mine.json"
-ln -s "$root/skills/jb-adopt" "$rg_/.claude/skills/jb-adopt"; ln -s "$root/skills/jb-demo" "$rg_/.agents/skills/jb-demo"
-ln -s /elsewhere/skills/x "$rg_/.claude/skills/other"; echo own > "$rg_/.claude/skills/own/SKILL.md"
-jq '{agents, items: [], retired: [.retired[] | select(.name == "global jb rules and hooks")]}' "$root/kit.json" > "$tmp/kit-retire-global.json"
-[ "$(jq '.retired | length' "$tmp/kit-retire-global.json")" = 1 ] || fail "kit.json does not retire the global jb rules and hooks"
-rg_session() { ( cd "$rg_" && git init -q 2>/dev/null; JB_KIT=$tmp/kit-retire-global.json HOME=$rg_ "$root/bin/jb" session ); }
-contains "$(rg_session)" 'retired kit items: global jb rules and hooks' || fail "session does not report the old global jb rules and hooks"
-out=$(inst_home "$rg_" "$tmp/kit-retire-global.json")
-contains "$out" 'kit: removed global jb rules and hooks' || fail "install did not remove the global jb rules and hooks: $out"
-[ "$(cat "$rg_/.claude/CLAUDE.md")" = "$(printf '%s\n' '# mine' '' '<!-- >>> jb-personal -->' '@~/.claude/personal.md' '<!-- <<< jb-personal -->')" ] || fail "retiring changed more of CLAUDE.md than the jb block: $(cat "$rg_/.claude/CLAUDE.md")"
-[ "$(cat "$rg_/.codex/AGENTS.md")" = '# codex own' ] || fail "retiring changed more of AGENTS.md than the jb block: $(cat "$rg_/.codex/AGENTS.md")"
-for f in .claude/settings.json .codex/hooks.json .cursor/hooks.json; do
-  contains "$(cat "$rg_/$f")" 'bin/jb' && fail "retiring left a global jb hook in $f"
-  case $f in .codex/*) ;; *) contains "$(cat "$rg_/$f")" theirs || fail "retiring dropped a foreign hook in $f" ;; esac
-done
-jq -e '.theme == "dark"' "$rg_/.claude/settings.json" >/dev/null || fail "retiring touched settings other than the jb hooks"
-[ ! -e "$rg_/.copilot/hooks/jb-toolkit.json" ] && [ -f "$rg_/.copilot/hooks/mine.json" ] || fail "retiring did not remove exactly jb's Copilot hooks file"
-[ ! -e "$rg_/.claude/skills/jb-adopt" ] && [ ! -L "$rg_/.agents/skills/jb-demo" ] || fail "retiring left a global link to the toolkit's skills"
-[ -L "$rg_/.claude/skills/other" ] && [ "$(cat "$rg_/.claude/skills/own/SKILL.md")" = own ] || fail "retiring removed a skill that is not the toolkit's"
-case "$(rg_session)" in *retired*) fail "the global jb rules and hooks are still reported after install" ;; esac
-
 # CI: projects call the toolkit's reusable verify.yml, which runs scripts/check and jb check --ci
 verify=$root/.github/workflows/verify.yml
 [ -f "$verify" ] || fail "jb-toolkit has no reusable .github/workflows/verify.yml"
@@ -842,52 +722,6 @@ out=$("$root/bin/jb" check --ci 2>&1) || true
 case "$out" in *"hooks off"*|*"Artifact/Docs not denied"*|*"agent hooks"*) fail "jb check --ci checks what only a machine has: $out" ;; esac
 contains "$out" "CI runs scripts/check" || fail "jb check --ci skipped a project check: $out"
 cd "$root"
-
-# retiring never costs the owner text: an unclosed block is refused, blank
-# lines outside the removed blocks stay, and one install removes every item
-rk=$tmp/kit-retire-only.json; jq '{agents: [.agents[0], .agents[1]], items: [], retired: .retired}' "$root/kit.json" > "$rk"
-rr=$(fresh_home retire-unclosed); mkdir -p "$rr/.local/bin"; printf '#!/bin/sh\n' > "$rr/.local/bin/gentle-ai"; chmod +x "$rr/.local/bin/gentle-ai"
-printf '%s\n' 'own top' '<!-- gentle-ai:persona -->' 'p (end marker lost)' '' '## my own section' 'precious owner text' > "$rr/.claude/CLAUDE.md"; cp "$rr/.claude/CLAUDE.md" "$tmp/unclosed.orig"
-inst_home "$rr" "$rk" >/dev/null
-cmp -s "$rr/.claude/CLAUDE.md" "$tmp/unclosed.orig" || fail "retiring gentle-ai changed a rules file whose block has no end marker: $(cat "$rr/.claude/CLAUDE.md")"
-rb=$(fresh_home retire-blanks); mkdir -p "$rb/.local/bin"; printf '#!/bin/sh\n' > "$rb/.local/bin/gentle-ai"; chmod +x "$rb/.local/bin/gentle-ai"
-printf '%s\n' '# my rules' '' '' 'keep two blanks above' '' '<!-- gentle-ai:persona -->' 'p' '<!-- /gentle-ai:persona -->' '' 'tail' > "$rb/.claude/CLAUDE.md"
-printf '%s\n' 'codex owner' '' '' '' 'end' > "$rb/.codex/AGENTS.md"; cp "$rb/.codex/AGENTS.md" "$tmp/blanks-codex.orig"
-inst_home "$rb" "$rk" >/dev/null
-[ "$(paste -sd'|' - < "$rb/.claude/CLAUDE.md")" = '# my rules|||keep two blanks above||tail' ] || fail "retiring gentle-ai changed blank lines outside its blocks: $(paste -sd'|' - < "$rb/.claude/CLAUDE.md")"
-cmp -s "$rb/.codex/AGENTS.md" "$tmp/blanks-codex.orig" || fail "retiring gentle-ai rewrote a rules file that has no gentle-ai block"
-for run in 1 2 3 4 5; do
-  ra=$(fresh_home "retire-all-$run"); mkdir -p "$ra/.local/bin"; printf '#!/bin/sh\n' > "$ra/.local/bin/gentle-ai"; chmod +x "$ra/.local/bin/gentle-ai"
-  printf '%s\n' own '' '<!-- >>> jb-toolkit -->' x '<!-- <<< jb-toolkit -->' '' '<!-- gentle-ai:persona -->' p '<!-- /gentle-ai:persona -->' > "$ra/.claude/CLAUDE.md"
-  inst_home "$ra" "$rk" >/dev/null
-  ! grep -q 'jb-toolkit\|gentle-ai' "$ra/.claude/CLAUDE.md" || fail "one install left a retired item behind (run $run): $(paste -sd'|' - < "$ra/.claude/CLAUDE.md")"
-done
-
-# retiring touches only what the retired tool installed: the owner's own
-# impeccable folder, empty hook lists and odd gentle-ai marker names
-ro=$(fresh_home retire-own); mkdir -p "$ro/.claude/skills/impeccable" "$ro/.local/bin"; echo own > "$ro/.claude/skills/impeccable/SKILL.md"
-printf '#!/bin/sh\n' > "$ro/.local/bin/gentle-ai"; chmod +x "$ro/.local/bin/gentle-ai"
-jq -n --arg i "sh $ro/.claude/skills/impeccable/scripts/impeccable hook" '{hooks: {Notification: [], Stop: [{hooks: [{type: "command", command: $i}]}]}}' > "$ro/.claude/settings.json"
-printf 'mine\r\n<!-- gentle-ai:persona2_x -->\r\np\r\n<!-- /gentle-ai:persona2_x -->\r\nend\r\n' > "$ro/.claude/CLAUDE.md"
-inst_home "$ro" "$rk" >/dev/null
-[ "$(cat "$ro/.claude/skills/impeccable/SKILL.md")" = own ] || fail "retiring impeccable deleted the owner's own impeccable folder"
-jq -e '.hooks.Notification == [] and (.hooks | has("Stop") | not)' "$ro/.claude/settings.json" >/dev/null || fail "retiring impeccable dropped the owner's empty hook list or kept its own: $(cat "$ro/.claude/settings.json")"
-! grep -q 'gentle-ai' "$ro/.claude/CLAUDE.md" && grep -q '^mine' "$ro/.claude/CLAUDE.md" && grep -q '^end' "$ro/.claude/CLAUDE.md" || fail "a gentle-ai block with digits, an underscore or CRLF was not stripped exactly: $(cat -A "$ro/.claude/CLAUDE.md")"
-case "$(cd "$ro" && git init -q 2>/dev/null; JB_KIT=$rk HOME=$ro "$root/bin/jb" session)" in *retired*) fail "retired items still reported once only the owner's own files are left" ;; esac
-
-# an old global jb hook in a commented (JSONC) hooks file is reported, never edited
-rj=$(fresh_home retire-jsonc); printf '{\n  // mine\n  "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "\\"$HOME/.local/bin/jb\\" stop"}]}]}\n}\n' > "$rj/.codex/hooks.json"; cp "$rj/.codex/hooks.json" "$tmp/rj.orig"
-out=$(inst_home "$rj" "$rk")
-contains "$out" 'could not remove global jb rules and hooks' || fail "a jb hook in a JSONC hooks file was not reported: $out"
-cmp -s "$rj/.codex/hooks.json" "$tmp/rj.orig" || fail "a JSONC hooks file was edited"
-
-# impeccable's agent files go with it; the owner's own agents stay
-ra=$(fresh_home retire-agents); mkdir -p "$ra/.claude/agents" "$ra/.codex/agents"
-echo x > "$ra/.claude/agents/impeccable-documenter.md"; echo x > "$ra/.codex/agents/impeccable-finish-reviewer.md"; echo mine > "$ra/.claude/agents/my-agent.md"
-contains "$(cd "$ra" && git init -q 2>/dev/null; JB_KIT=$rk HOME=$ra "$root/bin/jb" session)" 'impeccable' || fail "impeccable's leftover agent files are not reported"
-inst_home "$ra" "$rk" >/dev/null
-[ ! -e "$ra/.claude/agents/impeccable-documenter.md" ] && [ ! -e "$ra/.codex/agents/impeccable-finish-reviewer.md" ] || fail "retiring impeccable left its agent files"
-[ "$(cat "$ra/.claude/agents/my-agent.md")" = mine ] || fail "retiring impeccable removed the owner's own agent"
 
 # history from before a project adopted the standard is not judged; after it is
 new_repo history && cd "$tmp/history" && git switch -q -c feat/history

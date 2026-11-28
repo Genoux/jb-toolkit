@@ -19,12 +19,10 @@ is about changing the toolkit itself. Read `PRODUCT.md` first.
   (they need the toolkit's templates) and reads the machine's toolkit, when
   `jb install` linked one, for the kit and the latest version.
 - `kit.json` — the global baseline: the few plugins and tools every project
-  needs (pinned; moving a pin is a deliberate edit), no skills. `retired` lists what the kit once installed and dropped, each with its own
-  `present` test and `remove` step: `jb install` removes them, `jb session`
-  reports them.
+  needs (pinned; moving a pin is a deliberate edit), no skills.
 - `skills/` — jb's own skills, installed into every project by `jb sync`
-  like the stack's skills (`.agents/skills/<name>`, linked into
-  `.claude/skills`, never committed); a project picks up edits on its next sync.
+  (`.agents/skills/<name>`, linked into `.claude/skills`, never committed);
+  a project picks up edits on its next sync.
 - `.github/workflows/verify.yml` — the reusable CI every project's `ci.yml`
   calls: `scripts/check`, `jb check --ci`, gitleaks. The repo is public so
   public projects can call it.
@@ -32,11 +30,7 @@ is about changing the toolkit itself. Read `PRODUCT.md` first.
   keeps that job and calls this one with `scripts-check: false`.
 - `templates/managed/` — overwritten in projects by `jb sync`.
 - `templates/project/` — created once in a project, then the project's.
-- `templates/stacks/<stack>/` — starting `scripts/check` and `.gitignore` lines,
-  and the stack's skills: `skills.txt` (`<repo> <path> [name]`, fetched at
-  their latest commit) and `skill-commands` (`<name> <command>`, a tool that
-  installs its own skill: impeccable for `js` and `static`). `jb sync`
-  installs both into the project; jb's lists, not ib-toolkit's.
+- `templates/stacks/<stack>/` — starting `scripts/check` and `.gitignore` lines.
 - `scripts/check` — syntax, shellcheck when installed, and an end-to-end run
   in a temp dir: new project, `jb check`, silent `jb session`, hooks refusing,
   `jb bump`.
@@ -161,6 +155,19 @@ Unverified in the docs and so assumed: Copilot's `toolArgs` JSON string;
   supported agent: the owner does not use it. The cost: a repository not yet
   adopted gets no session hook and no rules, so adoption starts when the
   owner asks, from that repo or from a session in another project.
+- 2026-11-28: trimmed to what does work (owner: the toolkit felt like a
+  project to maintain, not a tool). The kit is frozen at four tools; a tool
+  goes in only when installing it by hand would annoy. Removed: the
+  `retired` mechanism and every retire step (the workstation ran `jb install`
+  first, which finished their removal; another machine still holding
+  retired items runs `jb install` from 0.8.0 before pulling this), stack skills (`skills.txt`, never
+  used, and `skill-commands`, which put impeccable in `js`/`static`
+  projects; a project adds a skill it needs by hand, and copies jb already
+  installed stay), and `{agents:KEY}` expansion in kit commands, which no
+  item used. Kept: the per-agent adapters, since the owner uses mostly
+  Claude Code but may switch, and enforcement already lives in git hooks
+  and CI that any agent passes through. `bin/jb` went from 1536 to 1174
+  lines.
 - 2026-11-08: the agent's rules file belongs to `jb install`, so it turns a symlinked one into a
   regular file once `personal.md` exists beside it in the agent's config dir;
   the owner's own rules live there, in the dotfiles, and the generated file

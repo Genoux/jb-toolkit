@@ -4,7 +4,7 @@
 # The owner runs `jb install` once; every other command is run by the agent.
 #
 #   jb install                       link jb into ~/.local/bin, import the owner's personal.md,
-#                                    add the baseline kit and remove retired items (tools only)
+#                                    add the baseline kit (tools only)
 #   jb session                       (SessionStart hook) report what the current project needs
 #   jb new <name> [--stack S] [--github] [--dir D]
 #                                    create a project (stacks: rust js static none)
@@ -40,10 +40,6 @@ PROJECTS="${JB_PROJECTS:-$(dirname "${MACHINE_TOOLKIT:-$TOOLKIT}")}"
 STACKS="rust js static none"
 KIT="${JB_KIT:-${MACHINE_TOOLKIT:-$TOOLKIT}/kit.json}"
 RULES_POINTER="Every agent follows the shared rules in \`.toolkit/RULES.md\` (managed by jb-toolkit); deliberate exceptions are in \`.jb-exceptions\`."
-# gentle-ai 4.x replaces its own binary on any invocation, even --version or
-# --help (checked in its source, internal/app/selfupdate.go), so even the call
-# that uninstalls it (retire_gentle_ai) opts out first.
-export GENTLE_AI_NO_SELF_UPDATE=1
 VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc|experimental)\.[0-9]+)?$'
 
 die()  { echo "jb: $*" >&2; exit 1; }
@@ -172,8 +168,8 @@ agent_rules_file() {
     opencode)       echo AGENTS.md ;;
   esac
 }
-# User-level hook files: kit commands may edit them, and older installs wired
-# jb's hooks there (retired, see jb_global_left). opencode has only JS plugins.
+# User-level hook files a kit command may edit (rtk init writes its hook
+# there). opencode has only JS plugins.
 agent_hook_file() {
   case "$1" in
     claude-code)    echo settings.json ;;
@@ -221,7 +217,6 @@ agent_personal_block() {
   elif agent_imports "$1"; then echo "@$dir/personal.md"
   else echo "Also read and follow ~/${dir#"$HOME"/}/personal.md (the owner's own rules)."; fi
 }
-agent_value() { jq -r --arg id "$1" --arg k "$2" '.agents[]? | select(.id == $id) | .[$k] // empty' "$KIT"; }
 
 present_agents() {
   local agent dir
@@ -230,22 +225,6 @@ present_agents() {
     dir=$(agent_dir "$agent")
     [ -z "$dir" ] || [ ! -d "$dir" ] || echo "$agent"
   done
-}
-
-# {agents:KEY} in a kit command stands for the present agents' KEY ids, comma
-# separated: each tool names the agents its own way.
-expand_agents() {
-  local text=$1 key values agent needs agents_re='\{agents:([A-Za-z]+)\}'
-  while [[ $text =~ $agents_re ]]; do
-    key=${BASH_REMATCH[1]}
-    values=$(for agent in $(present_agents); do
-      needs=$(agent_value "$agent" "${key}Needs")
-      [ -z "$needs" ] || command -v "$needs" >/dev/null || continue
-      agent_value "$agent" "$key"
-    done | paste -sd, -)
-    text=${text//"{agents:$key}"/$values}
-  done
-  printf '%s\n' "$text"
 }
 
 # Wires the session, guard and stop hooks into hook file $2, each calling jb
@@ -282,26 +261,13 @@ wire_hooks() {
     | if $flat then .version = 1 else . end'
 }
 
-# ---------------------------------------------------------------- kit
-# kit.json lists what every machine should have. Each function prints the
-# items still missing, one compact JSON object per line.
 # ---------------------------------------------------------------- skills
-# Skills are installed per project, in ib-toolkit's shape but from jb's own
-# lists: templates/stacks/<stack>/skills.txt names third-party skills (one
-# `<repo> <path> [name]` per line), downloaded at their latest commit (sparse,
-# depth-1 git) into <project>/.agents/skills, which Codex, Cursor,
-# Copilot and OpenCode read, and linked into <project>/.claude/skills for
-# Claude Code (a copy where links are not allowed);
-# templates/stacks/<stack>/skill-commands holds tools that install their own
-# skill (impeccable), one command per line, run in the project. Every folder jb
-# installs holds the marker and a `.gitignore` of `*`, so it never gets
-# committed; a folder without the marker is the project's own and is never
-# replaced.
+# jb's own skills go into <project>/.agents/skills, which Codex, Cursor,
+# Copilot and OpenCode read, linked into <project>/.claude/skills for Claude
+# Code (a copy where links are not allowed). Every folder jb installs holds the
+# marker and a `.gitignore` of `*`, so it never gets committed; a folder
+# without the marker is the project's own and is never replaced.
 SKILL_MARKER=.toolkit-source
-SKILL_MAX_AGE=$((7 * 24 * 3600)) # refreshed weekly, so "latest" stays latest
-GLOBAL_SKILL_STATE="$HOME/.agents/.jb-skill-list" # left by the retired global list
-
-skill_state() { echo "$(git -C "$1" rev-parse --absolute-git-dir)/jb-skill-list"; }
 
 link_dir() { # link_dir <source-dir> <link>
   rm -rf "$2"
@@ -314,33 +280,15 @@ link_dir() { # link_dir <source-dir> <link>
 }
 marked() { [ ! -L "$1" ] && [ -f "$1/$SKILL_MARKER" ]; }
 mark_skill() { echo "$2" > "$1/$SKILL_MARKER"; echo '*' > "$1/.gitignore"; }
-repo_url() { case "$1" in *:*|/*) echo "$1" ;; *) echo "https://github.com/$1.git" ;; esac; }
-sparse_dir() { case "$1" in */\*) echo "${1%/\*}" ;; *.md) dirname "$1" ;; *) echo "$1" ;; esac; }
 
-place_skill() { # place_skill <skills-dir> <name> <source> <is-file> <provenance>
+place_skill() { # place_skill <skills-dir> <name> <source-dir> <provenance>
   local dest="$1/$2"
   if [ -e "$dest" ] || [ -L "$dest" ]; then marked "$dest" || { SK_KEPT="$SK_KEPT $2"; return; }; fi
   rm -rf "$dest"
   mkdir -p "$dest"
-  if [ "$4" = 1 ]; then cp "$3" "$dest/SKILL.md"
-  else cp -R "$3/." "$dest/" && rm -rf "$dest/.git" "$dest/.github"; fi
-  mark_skill "$dest" "$5"
+  cp -R "$3/." "$dest/"
+  mark_skill "$dest" "$4"
   SK_INSTALLED="$SK_INSTALLED $2"
-}
-
-# True when project $1's stack lists skills that were never installed, went
-# missing, or were installed longer than SKILL_MAX_AGE ago.
-skill_list_missing() {
-  local base=$1 list=$2 state n
-  [ -f "$list" ] && [ -n "$(sed -e 's/#.*//' "$list" | awk 'NF')" ] || return 1
-  state=$(skill_state "$base")
-  [ -f "$state" ] || return 0
-  [ $(( $(date +%s) - $(mtime_of "$state") )) -lt "$SKILL_MAX_AGE" ] || return 0
-  while IFS= read -r n; do
-    [ -n "$n" ] || continue
-    [ -f "$base/.agents/skills/$n/SKILL.md" ] && [ -f "$base/.claude/skills/$n/SKILL.md" ] || return 0
-  done < "$state"
-  return 1
 }
 
 # A skill jb installed under $1, and the Claude Code link or copy made for it.
@@ -361,103 +309,8 @@ link_claude_skills() { # link_claude_skills <project-dir> <name>...
   done
 }
 
-install_skill_list() { # install_skill_list <list-file> <project-dir>
-  local src=$1 base=$2 skills="$2/.agents/skills" list entries repo
-  SK_INSTALLED="" SK_KEPT="" SK_FAILED="" SK_MISSING=""
-  [ -f "$src" ] || return 0
-  list=$(cat "$src")
-  entries=$(printf '%s\n' "$list" | sed -e 's/#.*//' | awk 'NF')
-  [ -n "$entries" ] || return 0
-  for repo in $(printf '%s\n' "$entries" | awk '!seen[$1]++ { print $1 }'); do
-    local tmp co mine whole=0 commit path name child found err
-    tmp=$(mktemp -d); co="$tmp/repo"
-    mine=$(printf '%s\n' "$entries" | awk -v r="$repo" '$1 == r')
-    printf '%s\n' "$mine" | awk '$2 == "." { f = 1 } END { exit !f }' && whole=1
-    if [ "$whole" = 1 ]; then
-      err=$(git -c core.askPass=true clone -q --depth=1 --filter=blob:none "$(repo_url "$repo")" "$co" 2>&1) || true
-    else
-      err=$(git -c core.askPass=true clone -q --depth=1 --filter=blob:none --sparse "$(repo_url "$repo")" "$co" 2>&1) || true
-      # shellcheck disable=SC2046 # one word per listed folder
-      [ -d "$co" ] && { err=$(git -C "$co" sparse-checkout set $(printf '%s\n' "$mine" | while read -r _ path _; do sparse_dir "$path"; done | sort -u) 2>&1) || true; }
-    fi
-    if [ ! -d "$co/.git" ] || ! commit=$(git -C "$co" rev-parse --short HEAD 2>/dev/null); then
-      SK_FAILED="$SK_FAILED $repo ($(printf '%s\n' "$err" | tail -1))"; rm -rf "$tmp"; continue
-    fi
-    mkdir -p "$skills"
-    while read -r _ path name; do
-      found=0
-      case "$path" in
-        */\*)
-          for child in "$co/${path%/\*}"/*/; do
-            [ -f "$child/SKILL.md" ] || continue
-            child=${child%/}
-            place_skill "$skills" "$(basename "$child")" "$child" 0 "$repo $path $commit"; found=1
-          done ;;
-        *.md) [ -f "$co/$path" ] && { place_skill "$skills" "${name:-$(basename "$path" .md)}" "$co/$path" 1 "$repo $path $commit"; found=1; } ;;
-        .)    [ -f "$co/SKILL.md" ] && { place_skill "$skills" "$name" "$co" 0 "$repo $path $commit"; found=1; } ;;
-        *)    [ -f "$co/$path/SKILL.md" ] && { place_skill "$skills" "${name:-$(basename "$path")}" "$co/$path" 0 "$repo $path $commit"; found=1; } ;;
-      esac
-      [ "$found" = 1 ] || SK_MISSING="$SK_MISSING $repo (no skill at $path)"
-    done <<< "$mine"
-    rm -rf "$tmp"
-  done
-
-  local n d removed=""
-  # shellcheck disable=SC2086 # one word per skill name
-  link_claude_skills "$base" $SK_INSTALLED
-  # Skills that left the list go, but only after a complete download with every
-  # listed skill found, so neither a network failure nor an entry upstream moved
-  # deletes anything; the state file is then rewritten.
-  if [ -z "$SK_FAILED$SK_MISSING" ]; then
-    for d in "$skills"/*; do
-      n=$(basename "$d")
-      marked "$d" || continue
-      grep -qxF "$n" "$(skill_state "$base")" 2>/dev/null || continue
-      case " $SK_INSTALLED " in *" $n "*) continue ;; esac
-      remove_listed_skill "$base" "$n"
-      removed="$removed $n"
-    done
-    printf '%s\n' $SK_INSTALLED > "$(skill_state "$base")"
-  fi
-  [ -z "$SK_INSTALLED" ] || echo "skills: installed at their latest version:$SK_INSTALLED"
-  [ -z "$removed" ] || note "skills: removed, no longer listed:$removed"
-  [ -z "$SK_KEPT" ] || note "skills: kept the project's own skills with the same name:$SK_KEPT"
-  [ -z "$SK_FAILED" ] || note "skills: could not download some (offline?); jb sync retries:$SK_FAILED"
-  [ -z "$SK_MISSING" ] || note "skills: some are not where the list says (moved upstream?); fix templates/stacks/*/skills.txt:$SK_MISSING"
-}
-
-# Tools that install their own skill (`<name> <command>` per line), run in the
-# project; the folder they leave is then marked as jb's, unless the project
-# already had its own skill of that name.
-run_skill_commands() { # run_skill_commands <commands-file> <project-dir>
-  local file=$1 base=$2 name command dir output
-  [ -f "$file" ] || return 0
-  while read -r name command; do
-    case "$name" in ''|'#'*) continue ;; esac
-    dir="$base/.agents/skills/$name"
-    if [ -e "$dir" ] && ! marked "$dir"; then note "skills: kept the project's own $name"; continue; fi
-    if output=$( cd "$base" && eval "$command" 2>&1 </dev/null ) && [ -f "$dir/SKILL.md" ]; then
-      mark_skill "$dir" "command: $command"
-    else
-      note "skills: could not install $name ($command): $(printf '%s' "$output" | tail -n 1)"
-    fi
-  done < "$file"
-}
-
-# The stack's skills this project lacks, listed with a leading space; one word
-# "list" stands for the whole skill list being absent or stale.
-stack_skills_missing() { # stack_skills_missing <project-dir> <stack>
-  local name _
-  if skill_list_missing "$1" "$TEMPLATES/stacks/$2/skills.txt"; then printf ' list'; fi
-  [ -f "$TEMPLATES/stacks/$2/skill-commands" ] || return 0
-  while read -r name _; do
-    case "$name" in ''|'#'*) continue ;; esac
-    [ -f "$1/.agents/skills/$name/SKILL.md" ] || printf ' %s' "$name"
-  done < "$TEMPLATES/stacks/$2/skill-commands"
-}
-
-# jb's own skills (skills/) go into every project the same way, marked with
-# their source, so one the toolkit stops shipping is removed on the next sync.
+# Marked with their source, so one the toolkit stops shipping is removed on
+# the next sync.
 # jb-new-project and jb-adopt are installed too: a pitch or an adoption is
 # asked for in a session in some other project, which is where they are read.
 TOOLKIT_SKILL_SOURCE="jb-toolkit skills/"
@@ -468,7 +321,7 @@ install_toolkit_skills() { # install_toolkit_skills <project-dir>
   for s in "$TOOLKIT"/skills/*/; do
     [ -f "$s/SKILL.md" ] || continue
     s=${s%/}
-    place_skill "$skills" "$(basename "$s")" "$s" 0 "$TOOLKIT_SKILL_SOURCE$(basename "$s") $TOOLKIT_VERSION"
+    place_skill "$skills" "$(basename "$s")" "$s" "$TOOLKIT_SKILL_SOURCE$(basename "$s") $TOOLKIT_VERSION"
   done
   for d in "$skills"/*; do
     marked "$d" && [ ! -d "$TOOLKIT/skills/$(basename "$d")" ] || continue
@@ -479,11 +332,9 @@ install_toolkit_skills() { # install_toolkit_skills <project-dir>
   [ -z "$SK_KEPT" ] || note "skills: kept the project's own skills with the same name:$SK_KEPT"
 }
 
-sync_skills() { # sync_skills <project-dir> <stack>
-  install_skill_list "$TEMPLATES/stacks/$2/skills.txt" "$1"
-  run_skill_commands "$TEMPLATES/stacks/$2/skill-commands" "$1"
-  install_toolkit_skills "$1"
-}
+# ---------------------------------------------------------------- kit
+# kit.json lists what every machine should have. Each function prints the
+# items still missing, one compact JSON object per line.
 
 # Prints item $1 when it is missing from this machine, narrowed to what is
 # missing. An item bound to an agent that is not installed is never missing.
@@ -537,7 +388,7 @@ install_release() {
     && echo "kit: installed $name $version into ~/.local/bin" || note "kit: could not unpack $name $version"
   rm -rf "$dir"
   local after output
-  after=$(expand_agents "$(jq -r '.after // empty' <<<"$item")")
+  after=$(jq -r '.after // empty' <<<"$item")
   [ -n "$after" ] || return 0
   output=$(PATH="$HOME/.local/bin:$PATH" run_kit_command "$after") \
     || note "kit: $name was installed but its setup step failed ($after): $(printf '%s' "$output" | tail -n 1)"
@@ -554,7 +405,7 @@ kit_config_files() {
   done
 }
 
-# Some tools (gentle-ai: "refusing to read symlink") will not touch a symlinked
+# Some tools ("refusing to read symlink") will not touch a symlinked
 # config file, and the owner's dotfiles link the agents' files. A kit command
 # runs on regular copies; the result is written back through the link and the
 # link restored, also after a failure or an interrupt, and a copy left by a
@@ -606,233 +457,13 @@ install_kit() {
           claude plugin install "$name" >/dev/null 2>&1 </dev/null && echo "kit: installed plugin $name" || note "kit: could not install $name: claude plugin install $name"
         else note "kit: claude not found; run: claude plugin marketplace add $source && claude plugin install $name"; fi ;;
       command)
-        name=$(jq -r .name <<<"$missing"); command=$(expand_agents "$(jq -r .install <<<"$missing")")
+        name=$(jq -r .name <<<"$missing"); command=$(jq -r .install <<<"$missing")
         output=$(run_kit_command "$command") && echo "kit: installed $name" \
           || note "kit: could not install $name ($command): $(printf '%s' "$output" | tail -n 1)" ;;
       release) install_release "$missing" ;;
     esac
   done < <(jq -c '.items[]' "$KIT")
   rm -f "$(kit_cache_file)"
-}
-
-# Items the kit once installed and later dropped. Dropping an item from
-# `items` uninstalls nothing, so each retired entry carries its own present
-# test and remove step; install runs them, session reports what is left.
-retired_item_present() {
-  ( PATH="$HOME/.local/bin:$PATH"; eval "$(jq -r .present <<<"$1")" ) </dev/null >/dev/null 2>&1
-}
-
-kit_retired_present() {
-  local item
-  [ -f "$KIT" ] || return 0
-  while IFS= read -r item; do
-    if retired_item_present "$item"; then echo "$item"; fi
-  done < <(jq -c '.retired[]?' "$KIT")
-}
-
-remove_retired_kit() {
-  local item name output present
-  # Collected first: a process substitution would run the later present tests
-  # while earlier removals rewrite the same files.
-  present=$(kit_retired_present)
-  [ -n "$present" ] || return 0
-  while IFS= read -r item; do
-    name=$(jq -r .name <<<"$item")
-    output=$(run_kit_command "$(jq -r .remove <<<"$item")") || true
-    if retired_item_present "$item"; then
-      note "kit: could not remove $name: $(printf '%s' "$output" | tail -n 1)"
-    else
-      echo "kit: removed $name"
-    fi
-  done <<< "$present"
-}
-
-report_retired_kit() {
-  local labels
-  labels=$(kit_retired_present | jq -r .name | paste -sd, - | sed 's/,/, /g')
-  [ -z "$labels" ] || echo "jb-toolkit: this machine still has retired kit items: $labels. Mention it to the owner once; jb install removes them."
-}
-
-# Remove steps of retired items that take more than one tool command; each
-# *_left is that item's present test.
-
-# Deletes every `<!-- $2:name -->` ... `<!-- /$2:name -->` block from file $1,
-# nested blocks with it, through a temp file written in place.
-strip_marked_blocks() {
-  local file=$1 prefix=$2 tmp
-  [ -f "$file" ] && grep -q "^<!-- $prefix:" "$file" || return 0
-  tmp=$(mktemp "$file.jb-tmp.XXXXXX") || return 1
-  # Only the blank line a removed block leaves next to another one goes; the
-  # owner's own blank lines stay. A block with no end marker would swallow the
-  # rest of the file, so the file is then left as it is.
-  if awk -v p="$prefix" '
-    { line = $0; sub(/\r$/, "", line) }
-    name == "" && line ~ "^<!-- " p ":[A-Za-z0-9_-]+ -->$" { name = substr(line, length(p) + 7, length(line) - length(p) - 10); next }
-    name != "" { if (line == "<!-- /" p ":" name " -->") { name = ""; after = 1 }; next }
-    after && line == "" && (last_blank || !printed) { next }
-    { after = 0; printed = 1; last_blank = (line == ""); print }
-    END { exit name != "" }' "$file" > "$tmp"; then
-    cmp -s "$file" "$tmp" || cat "$tmp" > "$file"
-  else
-    note "$(tilde "$file"): a <!-- $prefix:... --> block has no end marker: left untouched"
-  fi
-  rm -f "$tmp"
-}
-
-agent_rules_paths() {
-  local agent
-  for agent in $(present_agents); do
-    [ -z "$(agent_rules_file "$agent")" ] || echo "$(agent_dir "$agent")/$(agent_rules_file "$agent")"
-  done
-}
-
-gentle_ai_left() {
-  local file
-  command -v gentle-ai >/dev/null && return 0
-  for file in $(agent_rules_paths); do grep -qs '^<!-- gentle-ai:' "$file" && return 0; done
-  return 1
-}
-
-# gentle-ai's own uninstall leaves its orchestrator blocks behind (4.4.0).
-retire_gentle_ai() {
-  local file
-  if command -v gentle-ai >/dev/null; then gentle-ai uninstall --all --yes >/dev/null 2>&1 || true; fi
-  rm -f "$HOME/.local/bin/gentle-ai"
-  for file in $(agent_rules_paths); do strip_marked_blocks "$file" gentle-ai; done
-}
-
-IMPECCABLE_HOOK='skills/impeccable/scripts/impeccable'
-impeccable_dirs() {
-  local agent
-  echo "$HOME/.agents/skills/impeccable"
-  for agent in $(present_agents); do echo "$(agent_dir "$agent")/skills/impeccable"; done
-}
-
-# impeccable's own installer leaves its engine under scripts/; a folder
-# without it, and without jb's marker, is the owner's and stays.
-impeccable_installed() { [ -e "$1/scripts/impeccable" ] || marked "$1"; }
-
-# Its installer also writes impeccable-* agents into each agent's agents/.
-impeccable_agents() {
-  local agent file
-  for agent in $(present_agents); do
-    for file in "$(agent_dir "$agent")"/agents/impeccable-*; do [ ! -f "$file" ] || echo "$file"; done
-  done
-}
-
-impeccable_left() {
-  local dir file
-  for dir in $(impeccable_dirs); do impeccable_installed "$dir" && return 0; done
-  [ -z "$(impeccable_agents)" ] || return 0
-  for file in $(global_hook_paths); do grep -qsF "$IMPECCABLE_HOOK" "$file" && return 0; done
-  return 1
-}
-
-retire_impeccable() {
-  local dir file
-  for dir in $(impeccable_dirs); do if impeccable_installed "$dir"; then rm -rf "$dir"; fi; done
-  for file in $(impeccable_agents); do rm -f "$file"; done
-  for file in $(global_hook_paths); do
-    grep -qsF "$IMPECCABLE_HOOK" "$file" || continue
-    json_edit "$file" --arg h "$IMPECCABLE_HOOK" '
-      (.hooks // {}) as $before
-      | walk(if type == "array" then map(select(type != "object" or ((.command? // "") | contains($h) | not))) else . end)
-      | walk(if type == "array" then map(select(type != "object" or (has("hooks") | not) or (.hooks | length > 0))) else . end)
-      | if (.hooks | type) == "object" then .hooks |= with_entries(select(.value != [] or ($before[.key] // []) == [])) else . end' || true
-  done
-}
-
-skill_list_left() { [ -f "$GLOBAL_SKILL_STATE" ]; }
-
-retire_skill_list() {
-  local d
-  for d in "$HOME/.agents/skills"/*; do
-    if marked "$d"; then remove_listed_skill "$HOME" "$(basename "$d")"; fi
-  done
-  rm -f "$GLOBAL_SKILL_STATE"
-}
-
-# Older installs anchored RULES.md in every agent's user-level rules file,
-# wired jb's hooks into its user-level hook file and linked skills/ into the
-# user's skills folders. Each piece is recognised by its own marker, command
-# or link target, so nothing the owner wrote is touched.
-JB_RULES_START='<!-- >>> jb-toolkit -->'
-JB_RULES_END='<!-- <<< jb-toolkit -->'
-
-global_hook_paths() {
-  local agent
-  for agent in $(present_agents); do
-    [ -z "$(agent_hook_file "$agent")" ] || echo "$(agent_dir "$agent")/$(agent_hook_file "$agent")"
-  done
-}
-
-# A file jq cannot read (JSONC) is searched as text, so its old jb hook is
-# still reported; json_edit then leaves it untouched with a note.
-has_jb_hook() {
-  [ -f "$1" ] || return 1
-  if jq empty "$1" 2>/dev/null; then
-    jq -e --arg re "$JB_HOOK_RE" '[.. | objects | (.command?, .bash?) | strings | select(test($re))] | length > 0' "$1" >/dev/null 2>&1
-  else
-    grep -Eq 'bin/jb(\\?")? (session|guard|stop)( --agent [a-z-]+)?"' "$1"
-  fi
-}
-
-global_skill_links() {
-  local link
-  for link in "$HOME/.claude/skills"/* "$HOME/.agents/skills"/*; do
-    [ -L "$link" ] || continue
-    case "$(readlink "$link")" in "$TOOLKIT/skills/"*|*/jb-toolkit/skills/*) echo "$link" ;; esac
-  done
-}
-
-jb_global_left() {
-  local file
-  for file in $(agent_rules_paths); do grep -qsxF -- "$JB_RULES_START" "$file" && return 0; done
-  for file in $(global_hook_paths); do has_jb_hook "$file" && return 0; done
-  [ -n "$(global_skill_links)" ]
-}
-
-# Deletes the block between the markers in $1 and the blank line put_block
-# put before it (or after it, at the top of the file). Refuses, like
-# put_block, unless each marker is a whole line appearing once, end after start.
-remove_block() {
-  local file=$1 start=$2 end=$3 starts ends start_line end_line tmp
-  [ -f "$file" ] || return 0
-  starts=$(grep -cxF -- "$start" "$file" || true); ends=$(grep -cxF -- "$end" "$file" || true)
-  [ "$starts" != 0 ] || [ "$ends" != 0 ] || return 0
-  start_line=$(grep -nxF -- "$start" "$file" | sed -n 1p | cut -d: -f1); end_line=$(grep -nxF -- "$end" "$file" | sed -n 1p | cut -d: -f1)
-  if [ "$starts" != 1 ] || [ "$ends" != 1 ] || [ "$end_line" -lt "$start_line" ]; then
-    note "$file: the jb block's markers are missing, duplicated or out of order: left untouched"
-    return 1
-  fi
-  tmp=$(mktemp "$file.jb-tmp.XXXXXX") || return 1
-  awk -v s="$start" -v e="$end" '
-    skip { if ($0 == e) { skip = 0; trim = !printed }; next }
-    $0 == s { skip = 1; pending = 0; next }
-    trim && $0 == "" { trim = 0; next }
-    { trim = 0 }
-    $0 == "" { if (pending) print ""; pending = 1; next }
-    { if (pending) print ""; pending = 0; print; printed = 1 }
-    END { if (pending) print "" }' "$file" > "$tmp" && cat "$tmp" > "$file"
-  rm -f "$tmp"
-}
-
-retire_jb_global() {
-  local file link
-  for file in $(agent_rules_paths); do remove_block "$file" "$JB_RULES_START" "$JB_RULES_END" || true; done
-  for file in $(global_hook_paths); do
-    has_jb_hook "$file" || continue
-    case "$file" in */hooks/jb-toolkit.json) rm -f "$file"; continue ;; esac
-    json_edit "$file" --arg re "$JB_HOOK_RE" '
-      (.hooks // {}) as $before
-      | def ours: [(.command?, .bash?) | strings | select(test($re))] | length > 0;
-      def drop: map(select(type != "object" or (ours | not)));
-      .hooks |= with_entries(.value |= if type != "array" then . else drop
-          | map(if type == "object" and has("hooks") then .hooks |= drop else . end)
-          | map(select(type != "object" or (has("hooks") | not) or (.hooks | length > 0))) end)
-      | .hooks |= with_entries(select(.value != [] or ($before[.key] // []) == []))' || true
-  done
-  for link in $(global_skill_links); do rm -f "$link"; done
 }
 
 kit_cache_file() { echo "${XDG_CACHE_HOME:-$HOME/.cache}/jb-toolkit/kit-missing"; }
@@ -910,7 +541,6 @@ cmd_install() {
     [ -z "$(agent_rules_file "$agent")" ] || anchor_personal "$agent" "$dir/$(agent_rules_file "$agent")"
   done
 
-  remove_retired_kit
   install_kit
 }
 
@@ -1013,7 +643,7 @@ sync_into() {
       chmod +x scripts/check
       note "created scripts/check ($STACK)"
     fi
-    sync_skills "$PWD" "$STACK"
+    install_toolkit_skills "$PWD"
     if ! .toolkit/version >/dev/null 2>&1 && [ ! -f VERSION ] \
        && [ ! -f Cargo.toml ] && [ ! -f package.json ] && [ ! -f pyproject.toml ]; then
       echo "0.1.0" > VERSION
@@ -1156,8 +786,6 @@ cmd_check() {
       && ok "publishing tools denied" || bad "Artifact/Docs not denied in .claude/settings.json: run jb sync (R2)"
     [ -x .toolkit/bin/jb ] && jq -e '[.hooks.SessionStart[]?.hooks[]?.command | strings | select(test("\\.toolkit/bin/jb.? session$"))] | length > 0' .claude/settings.json >/dev/null 2>&1 \
       && ok "agent hooks call .toolkit/bin/jb" || bad "agent hooks not wired to .toolkit/bin/jb in .claude/settings.json: run jb sync (R0.2)"
-    local missing_skills; missing_skills=$(stack_skills_missing "$dir" "$(detect_stack "$dir")")
-    [ -z "$missing_skills" ] || warn "skills missing or older than a week:$missing_skills: run jb sync"
   fi
 
   if git rev-parse -q --verify HEAD >/dev/null; then
@@ -1312,7 +940,7 @@ cmd_session() {
   local root name text
   root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
   name=$(basename "$root")
-  text=$({ report_session "$root" "$name"; report_unpushed "$root"; report_missing_kit; report_retired_kit; })
+  text=$({ report_session "$root" "$name"; report_unpushed "$root"; report_missing_kit; })
   [ -n "$text" ] || return 0
   case "$(agent_flag "$@")" in
     github-copilot) jq -n --arg t "$text" '{additionalContext: $t}' ;;

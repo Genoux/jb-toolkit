@@ -13,8 +13,7 @@ commit only when asked). Stack and UI stay free per project.
 After that, you pitch and decide; agents scaffold, adopt, fix drift, release
 and demo by themselves. Install is tools only: it links `jb` into
 `~/.local/bin`, imports your own `personal.md` into each agent's rules file,
-adds the baseline kit and removes what the kit retired (the global rules,
-hooks and skill links older installs wrote included). Everything that tells
+and adds the baseline kit. Everything that tells
 an agent how to work lives in each project, written by `jb new` and `jb sync`
 for every agent in `kit.json` › `agents` that documents it (what each really
 supports is in the table in `AGENTS.md`). For Claude Code that is:
@@ -27,7 +26,7 @@ supports is in the table in `AGENTS.md`). For Claude Code that is:
 | Guard hook | `PreToolUse` (Bash) | `jb guard` refuses `--no-verify`, `commit -n`, `core.hooksPath` changes and `HUSKY=0`/`LEFTHOOK=0`/`SKIP=` on git commands |
 | Stop hook | `Stop` | `jb stop` runs `scripts/check` when the tree has changes and sends the agent back to work if it fails; honors `stop_hook_active`, silent otherwise |
 | Skills | `.agents/skills/jb-*`, linked into `.claude/skills` | `jb-new-project` (you pitch → it scaffolds), `jb-adopt` (existing repo → standard, in a worktree), `jb-release` (you say "release" → bump, PR, tag, draft), `jb-demo` (anything to show → local `.demo/*.html`); never committed |
-| Baseline kit | `kit.json` | the few plugins and tools (pinned) every machine should have, no skills, plus `retired` items the kit once installed; `jb install` adds the kit and removes the retired, `jb session` names what is missing or left over |
+| Baseline kit | `kit.json` | the few plugins and tools (pinned) every machine should have, no skills; `jb install` adds them, `jb session` names what is missing |
 | `jb` | `~/.local/bin/jb` | the agent's tool: `new`, `sync`, `check`, `bump`, `tag` |
 
 Then git hooks refuse off-standard commits and branches, and

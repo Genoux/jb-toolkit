@@ -1,2 +1,0 @@
-# <skill> <command>: a tool that installs its own skill into the project (run by jb sync)
-impeccable npx --yes impeccable@4.8.0 install --project --yes --no-hooks --providers=claude,codex
