@@ -60,42 +60,5 @@
         }
       }
     }
-  ],
-  "retired": [
-    {
-      "name": "ponytail",
-      "present": "jq -e \".plugins[\\\"ponytail@ponytail\\\"]\" \"$HOME/.claude/plugins/installed_plugins.json\" || grep -qF \"[plugins.\\\"ponytail@ponytail\\\"]\" \"$HOME/.codex/config.toml\"",
-      "remove": "claude plugin uninstall ponytail@ponytail; claude plugin marketplace remove ponytail; codex plugin remove ponytail@ponytail; codex plugin marketplace remove ponytail"
-    },
-    {
-      "name": "caveman",
-      "present": "command -v cave || jq -e \".mcpServers.caveman\" \"$HOME/.claude.json\"",
-      "remove": "if command -v cave >/dev/null; then cave disable claude; cave disable codex; fi; claude mcp remove caveman -s user; npm uninstall -g @caveman-ai/cli"
-    },
-    {
-      "name": "superpowers",
-      "present": "jq -e \".plugins[\\\"superpowers@claude-plugins-official\\\"]\" \"$HOME/.claude/plugins/installed_plugins.json\"",
-      "remove": "claude plugin uninstall superpowers@claude-plugins-official"
-    },
-    {
-      "name": "gentle-ai",
-      "present": "gentle_ai_left",
-      "remove": "retire_gentle_ai"
-    },
-    {
-      "name": "impeccable",
-      "present": "impeccable_left",
-      "remove": "retire_impeccable"
-    },
-    {
-      "name": "shared skills",
-      "present": "skill_list_left",
-      "remove": "retire_skill_list"
-    },
-    {
-      "name": "global jb rules and hooks",
-      "present": "jb_global_left",
-      "remove": "retire_jb_global"
-    }
   ]
 }
